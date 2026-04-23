@@ -618,6 +618,8 @@ public class ConnectionsManager extends BaseController {
         if (preferences.getBoolean("proxy_enabled", false) && !TextUtils.isEmpty(proxyAddress)) {
             native_setProxySettings(currentAccount, proxyAddress, proxyPort, proxyUsername, proxyPassword, proxySecret);
         }
+        // Yggdrasil proxy (127.0.0.1:9001) is set later by ApplicationLoader.startYggstack()
+        // once the tunnel is actually ready, to avoid connecting to a dead port
         String installer = "";
         try {
             Context context = ApplicationLoader.applicationContext;

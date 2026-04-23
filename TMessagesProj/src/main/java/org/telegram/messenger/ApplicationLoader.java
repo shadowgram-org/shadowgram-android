@@ -26,16 +26,29 @@ import android.net.NetworkInfo;
 import android.os.Build;
 import android.os.Handler;
 import android.os.PowerManager;
+import android.os.Process;
 import android.os.SystemClock;
 import android.telephony.TelephonyManager;
 import android.view.ViewGroup;
 
 import androidx.annotation.NonNull;
 
+import android.util.Log;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GooglePlayServicesUtil;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
+
+import kotlin.Unit;
+import kotlin.coroutines.EmptyCoroutineContext;
+import kotlinx.coroutines.BuildersKt;
+import link.yggdrasil.yggstack.android.data.PublicPeerInfo;
+import link.yggdrasil.yggstack.android.service.PeerFetcherService;
+
+import link.yggdrasil.yggstack.android.service.PeerPingerService;
+import link.yggdrasil.yggstack.mobile.Mobile;
+import link.yggdrasil.yggstack.mobile.Yggstack;
 import org.telegram.messenger.voip.VideoCapturerDevice;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
@@ -48,7 +61,11 @@ import org.telegram.ui.LauncherIconController;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class ApplicationLoader extends Application {
 
@@ -58,6 +75,12 @@ public class ApplicationLoader extends Application {
     public static volatile Context applicationContext;
     public static volatile NetworkInfo currentNetworkInfo;
     public static volatile Handler applicationHandler;
+    public static boolean isPeersReiniting = false;
+    public static volatile Yggstack yggInstance = null;
+    public static volatile List<PublicPeerInfo> lastPingedPeers = null;
+    public static volatile boolean isScanningPeers = false;
+    public static volatile int scanProgress = 0;
+    public static volatile int scanTotal = 0;
 
     private static ConnectivityManager connectivityManager;
     private static volatile boolean applicationInited = false;
@@ -280,8 +303,254 @@ public class ApplicationLoader extends Application {
         super();
     }
 
+    /**
+     * Build a peer URI with maxbackoff param for stable reconnection.
+     * Idempotent — won't double-add the param.
+     */
+    public static String buildPeerUri(String uri) {
+        if (uri.contains("maxbackoff=")) return uri;
+        String separator = uri.contains("?") ? "&" : "?";
+        return uri + separator + "maxbackoff=5s";
+    }
+
+    private String buildFinalConfig(JSONObject json, List<PublicPeerInfo> peersToPut) throws Exception {
+        // Add Certificate field if missing (required by core.New)
+        if (!json.has("Certificate")) {
+            json.put("Certificate", JSONObject.NULL);
+        }
+
+        if (peersToPut != null) {
+            JSONArray peersArray = new JSONArray();
+            for (PublicPeerInfo p : peersToPut) {
+                peersArray.put(buildPeerUri(p.getUri()));
+            }
+            json.put("Peers", peersArray);
+        }
+
+        // 3. Отключаем лишний шум
+        json.put("MulticastInterfaces", new JSONArray());
+        json.put("IfMTU", 1280);
+        json.put("NodeInfoPrivacy", true);
+
+        return json.toString();
+    }
+
+
+    /**
+     * Swap the active Yggdrasil peer: removes all current peers, adds the new one, updates saved config.
+     * Safe to call from any thread.
+     */
+    public static void switchToPeer(String peerUri) {
+        Yggstack ygg = yggInstance;
+        if (ygg == null) return;
+        try {
+            // Remove all current peers — try both bare URI and full URI with params,
+            // because getPeersJSON() returns bare URIs but removePeer may need the URI as added
+            String peersJson = ygg.getPeersJSON();
+            if (peersJson != null && !peersJson.isEmpty()) {
+                JSONArray arr = new JSONArray(peersJson);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject p = arr.getJSONObject(i);
+                    String uri = p.optString("URI", "");
+                    if (!uri.isEmpty()) {
+                        Log.d("YGG_TEST", "switchToPeer: removing " + uri);
+                        ygg.removePeer(uri);
+                        ygg.removePeer(buildPeerUri(uri));
+                    }
+                }
+            }
+
+            // Add the new peer
+            String newUri = buildPeerUri(peerUri);
+            Log.d("YGG_TEST", "switchToPeer: adding " + newUri);
+            ygg.addPeer(newUri);
+
+            Log.d("YGG_TEST", "switchToPeer: peers after: " + ygg.getPeersJSON());
+
+            // Update saved config
+            SharedPreferences prefs = applicationContext.getSharedPreferences("yggstack_prefs", MODE_PRIVATE);
+            String configJson = prefs.getString("ygg_config", null);
+            if (configJson != null) {
+                JSONObject config = new JSONObject(configJson);
+                JSONArray peersArray = new JSONArray();
+                peersArray.put(newUri);
+                config.put("Peers", peersArray);
+                prefs.edit().putString("ygg_config", config.toString()).apply();
+            }
+        } catch (Exception e) {
+            Log.e("YGG_TEST", "Peer switch failed: " + e.getMessage());
+        }
+    }
+
+    private void swapPeer(PublicPeerInfo newPeer, AtomicReference<String> currentPeerUri,
+                          AtomicReference<Long> lastSwitchTime) {
+        Log.d("YGG_TEST", "Switching to better peer: " + newPeer.getUri() + " (RTT: " + newPeer.getRtt() + "ms) from " + currentPeerUri.get());
+        switchToPeer(newPeer.getUri());
+        currentPeerUri.set(newPeer.getUri());
+        lastSwitchTime.set(System.currentTimeMillis());
+    }
+
+    private void startYggstack(JSONObject yggConfig, List<PublicPeerInfo> peers) throws Exception {
+        SharedPreferences prefs = getSharedPreferences("yggstack_prefs", MODE_PRIVATE);
+        String finalConfigJson = buildFinalConfig(yggConfig, peers);
+        prefs.edit().putString("ygg_config", finalConfigJson).apply();
+
+        Yggstack ygg = Mobile.newYggstack();
+        ygg.loadConfigJSON(finalConfigJson);
+
+        ygg.clearLocalMappings();
+        ygg.addLocalTCPMapping("127.0.0.1:9001", "[203:d7b9:b017:4ec0:eb4b:b28b:8a9f:bcd0]:9000");
+
+        ygg.setLogLevel("info");
+        ygg.setLogCallback(message -> Log.d("YGG_TEST", message));
+
+        ygg.start("", "");
+        yggInstance = ygg;
+        Log.i("YGG_TEST", "Yggstack TUNNEL active on 9001. My IP: " + ygg.getAddress());
+
+        // Enable proxy now that the tunnel is actually listening
+        ConnectionsManager.setProxySettings(true, "127.0.0.1", 9001, "", "", "00000000000000000000000000000001");
+    }
+
+    private void initYggdrasil() {
+        new Thread(() -> {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
+            try {
+                SharedPreferences prefs = getSharedPreferences("yggstack_prefs", MODE_PRIVATE);
+                String savedConfigJson = prefs.getString("ygg_config", null);
+                boolean initialLaunch = savedConfigJson == null || savedConfigJson.isEmpty();
+
+                PeerPingerService pingerService = new PeerPingerService();
+                boolean peersUnreachable = false;
+
+                JSONObject yggConfig;
+                if (initialLaunch) {
+                    Log.d("YGG_TEST", "First launch: generating new keys...");
+                    yggConfig = new JSONObject(Mobile.generateConfig());
+                } else {
+                    Log.d("YGG_TEST", "Loading existing config (keys preserved)");
+                    yggConfig = new JSONObject(savedConfigJson);
+                    JSONArray peersArray = yggConfig.getJSONArray("Peers");
+                    Log.d("YGG_TEST", "Pinging saved peers...");
+                    for (int i = 0; i < peersArray.length(); i++) {
+                        String peerUrl = peersArray.getString(i);
+                        PublicPeerInfo info = new PublicPeerInfo(peerUrl, "", null, null);
+                        PublicPeerInfo result = BuildersKt.runBlocking(EmptyCoroutineContext.INSTANCE, (scope, continuation) ->
+                                pingerService.checkPeer(info, continuation)
+                        );
+                        if (result.getRtt() == null) {
+                            Log.w("YGG_TEST", "Saved peer unreachable: " + peerUrl);
+                            peersUnreachable = true;
+                            break;
+                        } else {
+                            Log.d("YGG_TEST", "Saved peer reachable: " + peerUrl + ", RTT: " + result.getRtt());
+                        }
+                    }
+                }
+
+                if (!initialLaunch && !peersUnreachable) {
+                    // Saved peer is fine, start immediately
+                    startYggstack(yggConfig, null);
+                    return;
+                }
+
+                // Need to find new peers
+                isPeersReiniting = true;
+                Log.d("YGG_TEST", "Fetching public peers...");
+                PeerFetcherService peerFetcher = new PeerFetcherService();
+                List<PublicPeerInfo> peers = peerFetcher.fetchPublicPeersBlocking();
+                if (peers == null || peers.isEmpty()) {
+                    Log.e("YGG_TEST", "No public peers found!");
+                    isPeersReiniting = false;
+                    return;
+                }
+                Log.d("YGG_TEST", "Found " + peers.size() + " peers. Pinging with early start...");
+                isScanningPeers = true;
+                scanProgress = 0;
+                scanTotal = peers.size();
+
+                AtomicBoolean yggStarted = new AtomicBoolean(false);
+                AtomicReference<String> currentPeerUri = new AtomicReference<>(null);
+                AtomicReference<Long> lastSwitchTime = new AtomicReference<>(0L);
+                JSONObject yggConfigForCallback = yggConfig;
+
+                List<PublicPeerInfo> sortedPeers = BuildersKt.runBlocking(EmptyCoroutineContext.INSTANCE, (scope, continuation) ->
+                        pingerService.checkPeersByHostWithProgress(peers, (checked, total) -> {
+                            scanProgress = checked;
+                            return Unit.INSTANCE;
+                        }, updatedList -> {
+                            lastPingedPeers = new ArrayList<>(updatedList);
+                            // Find current best reachable peer
+                            PublicPeerInfo best = null;
+                            for (PublicPeerInfo p : updatedList) {
+                                if (p.getRtt() != null) {
+                                    best = p;
+                                    break;
+                                }
+                            }
+                            if (best == null) return Unit.INSTANCE;
+
+                            if (!yggStarted.get()) {
+                                // First reachable peer — start immediately
+                                if (yggStarted.compareAndSet(false, true)) {
+                                    currentPeerUri.set(best.getUri());
+                                    lastSwitchTime.set(System.currentTimeMillis());
+                                    Log.d("YGG_TEST", "Early start with peer: " + best.getUri() + " (RTT: " + best.getRtt() + "ms)");
+                                    try {
+                                        startYggstack(yggConfigForCallback, Collections.singletonList(best));
+                                    } catch (Exception e) {
+                                        Log.e("YGG_TEST", "Early start failed: " + e.getMessage());
+                                        yggStarted.set(false);
+                                    }
+                                }
+                            } else if (!best.getUri().equals(currentPeerUri.get())) {
+                                // Better peer found — swap if >=15s since last switch
+                                long elapsed = System.currentTimeMillis() - lastSwitchTime.get();
+                                if (elapsed >= 15000) {
+                                    swapPeer(best, currentPeerUri, lastSwitchTime);
+                                }
+                            }
+                            return Unit.INSTANCE;
+                        }, continuation)
+                );
+
+                isPeersReiniting = false;
+                isScanningPeers = false;
+                lastPingedPeers = sortedPeers;
+
+                // Final swap to best peer if needed
+                PublicPeerInfo bestPeer = null;
+                for (PublicPeerInfo p : sortedPeers) {
+                    if (p.getRtt() != null) {
+                        bestPeer = p;
+                        break;
+                    }
+                }
+
+                if (bestPeer == null) {
+                    Log.e("YGG_TEST", "No reachable peers found!");
+                    return;
+                }
+
+                if (!yggStarted.get()) {
+                    Log.d("YGG_TEST", "Starting with best peer: " + bestPeer.getUri() + " (RTT: " + bestPeer.getRtt() + "ms)");
+                    startYggstack(yggConfig, Collections.singletonList(bestPeer));
+                } else if (!bestPeer.getUri().equals(currentPeerUri.get())) {
+                    swapPeer(bestPeer, currentPeerUri, lastSwitchTime);
+                } else {
+                    Log.d("YGG_TEST", "Current peer is already the best: " + bestPeer.getUri());
+                }
+            } catch (Exception e) {
+                Log.e("YGG_TEST", "Yggstack CRASH: " + e.getMessage());
+            }
+        }).start();
+    }
+
     @Override
     public void onCreate() {
+
+        initYggdrasil();
+
         applicationLoaderInstance = this;
         try {
             applicationContext = getApplicationContext();

@@ -390,8 +390,19 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         return rootAnimatedInsetsListener;
     }
 
+    private void showPeersReinitingDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Установка соединения...")
+                .setMessage("Соединение недоступно или устанавливается впервые.\n\nПожалуйста, подождите 15 секунд для установки стабильного соединения.")
+                .setPositiveButton("ОК", null)
+                .show();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        if (ApplicationLoader.isPeersReiniting) {
+            showPeersReinitingDialog();
+        }
         isActive = true;
         if (BuildVars.DEBUG_VERSION) {
             StrictMode.setVmPolicy(new StrictMode.VmPolicy.Builder(StrictMode.getVmPolicy())
@@ -685,6 +696,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                     drawerLayoutContainer.closeDrawer(false);
                 } else if (id == 7) {
                     presentFragment(new InviteContactsActivity());
+                    drawerLayoutContainer.closeDrawer(false);
+                } else if (id == 18) {
+                    presentFragment(new YggdrasilStatusActivity());
                     drawerLayoutContainer.closeDrawer(false);
                 } else if (id == 8) {
                     openSettings(false);

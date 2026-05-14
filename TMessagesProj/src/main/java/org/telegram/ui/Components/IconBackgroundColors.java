@@ -15,6 +15,8 @@ public enum IconBackgroundColors {
 
     CYAN(0xFF32C0CE, 0xFF1D9CC6),
 
+    LIME(0xFF63fcbe, 0xFF49c19a),
+
     PURPLE(0xFFC46EF4, 0xFF9F55DF);
 
     public final int top;

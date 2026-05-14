@@ -10359,6 +10359,8 @@
     <string name="SettingsDevices">Devices</string>
     <string name="SettingsDevicesInfo">Manage connected devices</string>
     <string name="SettingsPowerSaving">Power Saving</string>
+    <string name="SettingsYggdrasil">Yggdrasil</string>
+    <string name="SettingsYggdrasilInfo">Yggdrasil status and managing</string>
     <string name="SettingsPowerSavingInfo">Reduce power usage on low charge</string>
     <string name="SettingsLanguage">Language</string>
     <string name="AddAccountInfo1_one">You can add %d additional account.</string>

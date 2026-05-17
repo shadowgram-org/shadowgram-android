@@ -7,12 +7,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import link.yggdrasil.yggstack.android.data.PublicPeerInfo
-import org.xbill.DNS.ARecord
-import org.xbill.DNS.Lookup
-import org.xbill.DNS.SimpleResolver
-import org.xbill.DNS.Type
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.InputStreamReader
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
@@ -31,6 +30,13 @@ class PeerFetcherService {
         private const val PRIMARY_URL = "https://publicpeers.neilalexander.dev/publicnodes.json"
         private const val MIRROR_URL = "https://peers.yggdrasil.link/publicnodes.json"
         private const val TIMEOUT_MS = 10000
+        private const val OPENDNS_RESOLVER = "208.67.222.222"
+        private const val OPENDNS_MY_IP_HOST = "myip.opendns.com"
+        private const val DNS_PORT = 53
+        private const val DNS_PACKET_SIZE = 512
+        private const val DNS_HEADER_SIZE = 12
+        private const val DNS_TYPE_A = 1
+        private const val DNS_CLASS_IN = 1
     }
 
     /**
@@ -100,25 +106,126 @@ class PeerFetcherService {
      */
     private fun getExternalIpViaDns(): String? {
         return try {
-            // Configure resolver to use OpenDNS (208.67.222.222)
-            val resolver = SimpleResolver("208.67.222.222")
-            resolver.setTimeout(java.time.Duration.ofSeconds(5))
+            val transactionId = System.currentTimeMillis().toInt() and 0xffff
+            val query = buildDnsAQuery(OPENDNS_MY_IP_HOST, transactionId)
+            val resolverAddress = InetAddress.getByName(OPENDNS_RESOLVER)
 
-            // Query myip.opendns.com for A record
-            val lookup = Lookup("myip.opendns.com", Type.A)
-            lookup.setResolver(resolver)
-            val records = lookup.run()
+            DatagramSocket().use { socket ->
+                socket.soTimeout = TIMEOUT_MS
+                socket.send(DatagramPacket(query, query.size, resolverAddress, DNS_PORT))
 
-            // Extract IP from first A record
-            if (records != null && records.isNotEmpty()) {
-                val aRecord = records[0] as? ARecord
-                aRecord?.address?.hostAddress
-            } else {
-                null
+                val response = ByteArray(DNS_PACKET_SIZE)
+                val packet = DatagramPacket(response, response.size)
+                socket.receive(packet)
+
+                parseDnsAResponse(response, packet.length, transactionId)
             }
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun buildDnsAQuery(hostname: String, transactionId: Int): ByteArray {
+        val output = ByteArrayOutputStream()
+        writeDnsShort(output, transactionId)
+        writeDnsShort(output, 0x0100) // Standard recursive query.
+        writeDnsShort(output, 1)
+        writeDnsShort(output, 0)
+        writeDnsShort(output, 0)
+        writeDnsShort(output, 0)
+
+        hostname.split('.').forEach { label ->
+            val bytes = label.toByteArray(Charsets.US_ASCII)
+            output.write(bytes.size)
+            output.write(bytes)
+        }
+        output.write(0)
+        writeDnsShort(output, DNS_TYPE_A)
+        writeDnsShort(output, DNS_CLASS_IN)
+
+        return output.toByteArray()
+    }
+
+    private fun parseDnsAResponse(response: ByteArray, length: Int, transactionId: Int): String? {
+        if (length < DNS_HEADER_SIZE || readDnsShort(response, 0) != transactionId) {
+            return null
+        }
+
+        val flags = readDnsShort(response, 2)
+        if ((flags and 0x8000) == 0 || (flags and 0x000f) != 0) {
+            return null
+        }
+
+        val questions = readDnsShort(response, 4)
+        val answers = readDnsShort(response, 6)
+        var offset = DNS_HEADER_SIZE
+
+        repeat(questions) {
+            offset = skipDnsName(response, length, offset) ?: return null
+            if (offset + 4 > length) {
+                return null
+            }
+            offset += 4
+        }
+
+        repeat(answers) {
+            offset = skipDnsName(response, length, offset) ?: return null
+            if (offset + 10 > length) {
+                return null
+            }
+
+            val type = readDnsShort(response, offset)
+            val recordClass = readDnsShort(response, offset + 2)
+            val dataLength = readDnsShort(response, offset + 8)
+            offset += 10
+
+            if (offset + dataLength > length) {
+                return null
+            }
+            if (type == DNS_TYPE_A && recordClass == DNS_CLASS_IN && dataLength == 4) {
+                return InetAddress.getByAddress(response.copyOfRange(offset, offset + 4)).hostAddress
+            }
+
+            offset += dataLength
+        }
+
+        return null
+    }
+
+    private fun skipDnsName(response: ByteArray, length: Int, startOffset: Int): Int? {
+        var offset = startOffset
+        while (offset < length) {
+            val labelLength = response[offset].toInt() and 0xff
+            offset++
+
+            when {
+                labelLength == 0 -> return offset
+                (labelLength and 0xc0) == 0xc0 -> {
+                    if (offset >= length) {
+                        return null
+                    }
+                    return offset + 1
+                }
+                (labelLength and 0xc0) != 0 -> return null
+                else -> {
+                    offset += labelLength
+                    if (offset > length) {
+                        return null
+                    }
+                }
+            }
+        }
+
+        return null
+    }
+
+    private fun readDnsShort(data: ByteArray, offset: Int): Int {
+        return ((data[offset].toInt() and 0xff) shl 8) or (data[offset + 1].toInt() and 0xff)
+    }
+
+    private fun writeDnsShort(output: ByteArrayOutputStream, value: Int) {
+        output.write((value ushr 8) and 0xff)
+        output.write(value and 0xff)
     }
 
     /**

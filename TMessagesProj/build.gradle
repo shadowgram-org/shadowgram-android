@@ -59,7 +59,6 @@ dependencies {
     implementation "androidx.credentials:credentials-play-services-auth:1.6.0-alpha04"
     implementation files('libs/yggstack.aar')
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3"
-    implementation "dnsjava:dnsjava:3.5.3"
 
 //    implementation 'com.google.mlkit:translate:17.0.3'
 

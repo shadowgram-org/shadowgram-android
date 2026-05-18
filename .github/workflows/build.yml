@@ -3,10 +3,20 @@ name: Build APK
 on:
   push:
     branches: [master]
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && 'draft-release' || github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/master' }}
+
+env:
+  APK_OUTPUT: TMessagesProj_App/build/outputs/apk/afat/release/app.apk
 
 jobs:
   release-apk:
@@ -116,8 +126,96 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore-ccache.outputs.cache-primary-key }}
 
-      - name: Upload release APK
+      - name: Prepare APK artifact
+        id: apk
+        run: |
+          set -euo pipefail
+
+          install -d dist
+          version_name="$(grep '^APP_VERSION_NAME=' gradle.properties | cut -d= -f2-)"
+          version_code="$(grep '^APP_VERSION_CODE=' gradle.properties | cut -d= -f2-)"
+          short_sha="${GITHUB_SHA::7}"
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            release_tag="$GITHUB_REF_NAME"
+            release_version="${GITHUB_REF_NAME#v}"
+          else
+            release_version="$version_name"
+            release_tag="v${release_version}"
+          fi
+
+          safe_release_tag="${release_tag//\//-}"
+          apk_name="shadowgram-${safe_release_tag}.apk"
+          artifact_name="shadowgram-${safe_release_tag}-${short_sha}-apk"
+
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$release_version" != "$version_name" ]]; then
+            echo "::warning::Tag version '$release_version' does not match APP_VERSION_NAME '$version_name'."
+          fi
+
+          cp "$APK_OUTPUT" "dist/$apk_name"
+
+          {
+            echo "apk_name=$apk_name"
+            echo "apk_path=dist/$apk_name"
+            echo "artifact_name=$artifact_name"
+            echo "release_tag=$release_tag"
+            echo "release_version=$release_version"
+            echo "version_name=$version_name"
+            echo "version_code=$version_code"
+            echo "short_sha=$short_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: shadowgram-release-apk
-          path: TMessagesProj_App/build/outputs/apk/afat/release/app.apk
+          name: ${{ steps.apk.outputs.artifact_name }}
+          path: ${{ steps.apk.outputs.apk_path }}
+          if-no-files-found: error
+
+      - name: Update draft release notes
+        if: ${{ github.ref == 'refs/heads/master' }}
+        id: draft_release
+        uses: release-drafter/release-drafter@v7
+        with:
+          tag: ${{ steps.apk.outputs.release_tag }}
+          version: ${{ steps.apk.outputs.release_version }}
+          commitish: ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload APK to draft release
+        if: ${{ github.ref == 'refs/heads/master' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.apk.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          draft: true
+          files: ${{ steps.apk.outputs.apk_path }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Refresh tagged release notes
+        if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+        id: tagged_release_draft
+        uses: release-drafter/release-drafter@v7
+        with:
+          tag: ${{ steps.apk.outputs.release_tag }}
+          version: ${{ steps.apk.outputs.release_version }}
+          commitish: ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload APK and publish tagged release
+        if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.apk.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          files: ${{ steps.apk.outputs.apk_path }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

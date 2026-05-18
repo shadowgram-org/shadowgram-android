@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: android-release
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_EXECUTABLE: ccache
 
     steps:
       - uses: actions/checkout@v4
@@ -42,14 +45,41 @@ jobs:
           cp "$ANDROID_HOME/build-tools/30.0.3/dx" "$ANDROID_HOME/build-tools/35.0.0/dx"
           cp "$ANDROID_HOME/build-tools/30.0.3/lib/dx.jar" "$ANDROID_HOME/build-tools/35.0.0/lib/dx.jar"
 
-      - name: Cache native build
-        uses: actions/cache@v4
+      - name: Install ccache
+        run: |
+          if ! command -v ccache >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ccache
+          fi
+          ccache --version
+
+      - name: Compute ccache key
+        id: ccache-key
+        run: |
+          native_config_hash="${{ hashFiles('build.gradle', 'settings.gradle', 'gradle.properties', 'gradle/wrapper/gradle-wrapper.properties', 'TMessagesProj/build.gradle', 'TMessagesProj_App/build.gradle', 'TMessagesProj/jni/**/CMakeLists.txt', 'TMessagesProj/jni/**/*.cmake') }}"
+          cache_prefix="ccache-v1-${RUNNER_OS}-ndk21.4.7075529-${native_config_hash}"
+          echo "prefix=${cache_prefix}" >> "$GITHUB_OUTPUT"
+          echo "key=${cache_prefix}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        id: restore-ccache
+        uses: actions/cache/restore@v4
         with:
-          path: |
-            TMessagesProj/.cxx
-          key: native-${{ runner.os }}-ndk21.4.7075529-${{ hashFiles('TMessagesProj/jni/**') }}
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache-key.outputs.key }}
           restore-keys: |
-            native-${{ runner.os }}-ndk21.4.7075529-
+            ${{ steps.ccache-key.outputs.prefix }}-
+            ccache-v1-${{ runner.os }}-ndk21.4.7075529-
+            ccache-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          mkdir -p "$CCACHE_DIR"
+          ccache --set-config=max_size=4G
+          ccache --set-config=base_dir="$GITHUB_WORKSPACE"
+          ccache --set-config=compiler_check=content
+          ccache --set-config=compression=true
+          ccache -z
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -74,6 +104,17 @@ jobs:
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ vars.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+      - name: Save ccache
+        if: always() && steps.restore-ccache.outputs.cache-primary-key != '' && steps.restore-ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore-ccache.outputs.cache-primary-key }}
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4

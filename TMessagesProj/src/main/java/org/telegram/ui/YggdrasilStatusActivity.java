@@ -15,11 +15,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.R;
 import org.telegram.ui.ActionBar.ActionBar;
-import org.telegram.ui.ActionBar.BackDrawable;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.ActionBar.ThemeDescription;
 import org.telegram.ui.Cells.HeaderCell;
 import org.telegram.ui.Cells.ShadowSectionCell;
 import org.telegram.ui.Cells.TextDetailSettingsCell;
@@ -79,9 +80,9 @@ public class YggdrasilStatusActivity extends BaseFragment {
 
     @Override
     public View createView(Context context) {
-        actionBar.setBackButtonDrawable(new BackDrawable(false));
+        actionBar.setBackButtonImage(R.drawable.ic_ab_back);
         actionBar.setAllowOverlayTitle(true);
-        actionBar.setTitle("Yggdrasil");
+        actionBar.setTitle(LocaleController.getString(R.string.SettingsYggdrasil));
         actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
             @Override
             public void onItemClick(int id) {
@@ -98,6 +99,8 @@ public class YggdrasilStatusActivity extends BaseFragment {
         listAdapter = new ListAdapter(context);
 
         listView = new RecyclerListView(context);
+        listView.setSections();
+        actionBar.setAdaptiveBackground(listView);
         listView.setVerticalScrollBarEnabled(false);
         listView.setLayoutManager(new LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false));
         frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.TOP | Gravity.LEFT));
@@ -144,7 +147,7 @@ public class YggdrasilStatusActivity extends BaseFragment {
             CharSequence value = ((TextDetailSettingsCell) view).getValueTextView().getText();
             if (value != null && value.length() > 0) {
                 AndroidUtilities.addToClipboard(value);
-                BulletinFactory.of(this).createCopyBulletin("Copied to clipboard").show();
+                BulletinFactory.of(this).createCopyBulletin(LocaleController.getString(R.string.TextCopied)).show();
             }
         }
     }
@@ -430,45 +433,47 @@ public class YggdrasilStatusActivity extends BaseFragment {
             if (viewType == VIEW_TYPE_HEADER) {
                 HeaderCell cell = (HeaderCell) holder.itemView;
                 if (position == statusHeaderRow) {
-                    cell.setText("Status");
+                    cell.setText(LocaleController.getString(R.string.YggdrasilStatusHeader));
                 } else if (position == peersHeaderRow) {
-                    cell.setText("Connected Peers");
+                    cell.setText(LocaleController.getString(R.string.YggdrasilConnectedPeers));
                 } else if (position == configHeaderRow) {
-                    cell.setText("Config Peers");
+                    cell.setText(LocaleController.getString(R.string.YggdrasilConfigPeers));
                 } else if (position == pingedHeaderRow) {
                     if (ApplicationLoader.isScanningPeers) {
-                        cell.setText("Pinged Peers (" + ApplicationLoader.scanProgress + "/" + ApplicationLoader.scanTotal + ")");
+                        cell.setText(LocaleController.getString(R.string.YggdrasilPingedPeers) + " (" + ApplicationLoader.scanProgress + "/" + ApplicationLoader.scanTotal + ")");
                     } else if (!pingedPeersList.isEmpty()) {
-                        cell.setText("Pinged Peers (" + pingedPeersList.size() + ")");
+                        cell.setText(LocaleController.getString(R.string.YggdrasilPingedPeers) + " (" + pingedPeersList.size() + ")");
                     } else {
-                        cell.setText("Pinged Peers");
+                        cell.setText(LocaleController.getString(R.string.YggdrasilPingedPeers));
                     }
                 }
             } else if (viewType == VIEW_TYPE_TEXT_DETAIL) {
                 TextDetailSettingsCell cell = (TextDetailSettingsCell) holder.itemView;
                 if (position == statusRow) {
-                    cell.setTextAndValue("Connection", statusString, true);
+                    cell.setMultilineDetail(false);
+                    cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilConnection), statusString, true);
                     cell.getValueTextView().setTextColor(Theme.getColor(
                             statusRunning ? Theme.key_windowBackgroundWhiteGreenText : Theme.key_text_RedRegular
                     ));
                 } else if (position == addressRow) {
-                    cell.setTextAndValue("IPv6 Address", addressString, true);
+                    cell.setMultilineDetail(false);
+                    cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilIPv6Address), addressString, true);
                     cell.getValueTextView().setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
                 } else if (position == publicKeyRow) {
                     cell.setMultilineDetail(true);
-                    cell.setTextAndValue("Public Key", publicKeyString, false);
+                    cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilPublicKey), publicKeyString, false);
                     cell.getValueTextView().setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
                 } else if (position >= peersStartRow && position < peersEndRow) {
                     int idx = position - peersStartRow;
                     boolean divider = position < peersEndRow - 1;
                     cell.setMultilineDetail(true);
-                    cell.setTextAndValue("Peer " + (idx + 1), peersList.get(idx), divider);
+                    cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilPeer) + " " + (idx + 1), peersList.get(idx), divider);
                     cell.getValueTextView().setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
                 } else if (position >= configStartRow && position < configEndRow) {
                     int idx = position - configStartRow;
                     boolean divider = position < configEndRow - 1;
                     cell.setMultilineDetail(true);
-                    cell.setTextAndValue("Peer " + (idx + 1), configPeersList.get(idx), divider);
+                    cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilPeer) + " " + (idx + 1), configPeersList.get(idx), divider);
                     cell.getValueTextView().setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
                 } else if (position >= pingedStartRow && position < pingedEndRow) {
                     int idx = position - pingedStartRow;
@@ -481,21 +486,21 @@ public class YggdrasilStatusActivity extends BaseFragment {
                 TextSettingsCell cell = (TextSettingsCell) holder.itemView;
                 if (position == retryPeersRow) {
                     if (ApplicationLoader.isScanningPeers) {
-                        cell.setText("Scanning... (" + ApplicationLoader.scanProgress + "/" + ApplicationLoader.scanTotal + ")", false);
+                        cell.setText(LocaleController.getString(R.string.YggdrasilScanning) + " (" + ApplicationLoader.scanProgress + "/" + ApplicationLoader.scanTotal + ")", false);
                         cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
                     } else {
-                        cell.setText("Scan Peers", false);
+                        cell.setText(LocaleController.getString(R.string.YggdrasilScanPeers), false);
                         cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText6));
                     }
                 }
             } else if (viewType == VIEW_TYPE_INFO) {
                 TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
                 if (position == noPeersRow) {
-                    cell.setText("No peers connected");
+                    cell.setText(LocaleController.getString(R.string.YggdrasilNoConnectedPeers));
                 } else if (position == noConfigRow) {
-                    cell.setText("No config peers");
+                    cell.setText(LocaleController.getString(R.string.YggdrasilNoConfigPeers));
                 } else if (position == noPingedRow) {
-                    cell.setText("No pinged peers yet");
+                    cell.setText(LocaleController.getString(R.string.YggdrasilNoPingedPeers));
                 }
             }
         }
@@ -514,5 +519,46 @@ public class YggdrasilStatusActivity extends BaseFragment {
                 return VIEW_TYPE_TEXT_DETAIL;
             }
         }
+    }
+
+    @Override
+    public ArrayList<ThemeDescription> getThemeDescriptions() {
+        ArrayList<ThemeDescription> themeDescriptions = new ArrayList<>();
+
+        themeDescriptions.add(new ThemeDescription(listView, ThemeDescription.FLAG_CELLBACKGROUNDCOLOR, new Class[]{TextDetailSettingsCell.class, TextSettingsCell.class, HeaderCell.class}, null, null, null, Theme.key_windowBackgroundWhite));
+        themeDescriptions.add(new ThemeDescription(fragmentView, ThemeDescription.FLAG_BACKGROUND, null, null, null, null, Theme.key_windowBackgroundGray));
+
+        themeDescriptions.add(new ThemeDescription(listView, ThemeDescription.FLAG_LISTGLOWCOLOR, null, null, null, null, Theme.key_actionBarDefault));
+        themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_ITEMSCOLOR, null, null, null, null, Theme.key_actionBarDefaultIcon));
+        themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_TITLECOLOR, null, null, null, null, Theme.key_actionBarDefaultTitle));
+        themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_SELECTORCOLOR, null, null, null, null, Theme.key_actionBarDefaultSelector));
+
+        themeDescriptions.add(new ThemeDescription(listView, ThemeDescription.FLAG_SELECTOR, null, null, null, null, Theme.key_listSelector));
+
+        themeDescriptions.add(new ThemeDescription(listView, 0, new Class[]{View.class}, Theme.dividerPaint, null, null, Theme.key_divider));
+
+        themeDescriptions.add(new ThemeDescription(listView, 0, new Class[]{TextDetailSettingsCell.class}, new String[]{"textView"}, null, null, null, Theme.key_windowBackgroundWhiteBlackText));
+        themeDescriptions.add(new ThemeDescription(listView, 0, new Class[]{TextDetailSettingsCell.class}, new String[]{"valueTextView"}, null, null, null, Theme.key_windowBackgroundWhiteGrayText2));
+
+        themeDescriptions.add(new ThemeDescription(listView, 0, new Class[]{TextSettingsCell.class}, new String[]{"textView"}, null, null, null, Theme.key_windowBackgroundWhiteBlackText));
+        themeDescriptions.add(new ThemeDescription(listView, 0, new Class[]{TextSettingsCell.class}, new String[]{"valueTextView"}, null, null, null, Theme.key_windowBackgroundWhiteValueText));
+
+        themeDescriptions.add(new ThemeDescription(listView, 0, new Class[]{HeaderCell.class}, new String[]{"textView"}, null, null, null, Theme.key_windowBackgroundWhiteBlueHeader));
+
+        themeDescriptions.add(new ThemeDescription(listView, ThemeDescription.FLAG_BACKGROUNDFILTER, new Class[]{TextInfoPrivacyCell.class}, null, null, null, Theme.key_windowBackgroundGrayShadow));
+        themeDescriptions.add(new ThemeDescription(listView, 0, new Class[]{TextInfoPrivacyCell.class}, new String[]{"textView"}, null, null, null, Theme.key_windowBackgroundWhiteGrayText4));
+
+        return themeDescriptions;
+    }
+
+    @Override
+    public boolean isSupportEdgeToEdge() {
+        return true;
+    }
+
+    @Override
+    public void onInsets(int left, int top, int right, int bottom) {
+        listView.setPadding(0, 0, 0, bottom);
+        listView.setClipToPadding(false);
     }
 }

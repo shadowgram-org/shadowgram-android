@@ -262,8 +262,6 @@ def getProps(String propName) {
         return "";
     }
 }
-apply plugin: 'com.google.gms.google-services'
-
 task checkVisibility {
     doFirst {
         def isPrivateBuild = project.gradle.startParameter.taskNames.find {

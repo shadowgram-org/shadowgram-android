@@ -24,16 +24,17 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Set up Android SDK components
-        run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "build-tools;35.0.0" \
-            "build-tools;30.0.3" \
-            "platforms;android-35" \
-            "platform-tools" \
-            "ndk;21.4.7075529" \
-            "cmake;3.10.2.4988404"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
+          packages: >-
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+            build-tools;30.0.3
+            ndk;21.4.7075529
+            cmake;3.10.2.4988404
 
       - name: Apply dx compatibility workaround
         # build-tools 35 removed dx, but some dependencies still need it
@@ -62,9 +63,11 @@ jobs:
           ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
 
       - name: Build signed release APK
-        run: ./gradlew :TMessagesProj_App:assembleAfatRelease
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/21.4.7075529"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          ./gradlew :TMessagesProj_App:assembleAfatRelease
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/21.4.7075529
           TELEGRAM_APP_ID: ${{ secrets.TELEGRAM_APP_ID }}
           TELEGRAM_APP_HASH: ${{ secrets.TELEGRAM_APP_HASH }}
           ANDROID_RELEASE_STORE_FILE: ${{ runner.temp }}/keystore/release.keystore

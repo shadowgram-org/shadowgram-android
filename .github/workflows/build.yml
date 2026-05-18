@@ -3,14 +3,17 @@ name: Build APK
 on:
   push:
     branches: [master]
-  pull_request:
-    branches: [master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  release-apk:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    environment: android-release
 
     steps:
       - uses: actions/checkout@v4
@@ -50,13 +53,27 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build release APK
+      - name: Decode release keystore
+        run: |
+          install -d "$RUNNER_TEMP/keystore"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/keystore/release.keystore"
+          chmod 600 "$RUNNER_TEMP/keystore/release.keystore"
+        env:
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+
+      - name: Build signed release APK
         run: ./gradlew :TMessagesProj_App:assembleAfatRelease
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/21.4.7075529
+          TELEGRAM_APP_ID: ${{ secrets.TELEGRAM_APP_ID }}
+          TELEGRAM_APP_HASH: ${{ secrets.TELEGRAM_APP_HASH }}
+          ANDROID_RELEASE_STORE_FILE: ${{ runner.temp }}/keystore/release.keystore
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
 
-      - name: Upload APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: shadowgram-apk
+          name: shadowgram-release-apk
           path: TMessagesProj_App/build/outputs/apk/afat/release/app.apk

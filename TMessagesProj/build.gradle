@@ -75,6 +75,22 @@ dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }
 
+def envOrProperty = { name, fallback ->
+    def envValue = System.getenv(name)
+    if (envValue != null && !envValue.isEmpty()) {
+        return envValue
+    }
+    def propValue = findProperty(name)
+    return propValue != null && !propValue.toString().isEmpty() ? propValue.toString() : fallback
+}
+
+def javaStringLiteral = { value ->
+    '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+}
+
+def telegramAppId = envOrProperty("TELEGRAM_APP_ID", "4")
+def telegramAppHash = envOrProperty("TELEGRAM_APP_HASH", "014b35b6184100b085b0d0572f9b5103")
+
 def isWindows = String.valueOf(DefaultNativePlatform.currentOperatingSystem.toFamilyName() == OperatingSystemFamily.WINDOWS)
 android {
     compileSdkVersion 35
@@ -221,6 +237,15 @@ android {
             buildConfigField "boolean", "BUILD_HOST_IS_WINDOWS", isWindows
             buildConfigField "int", "VERSION_NUM", "7"
         }
+    }
+
+    buildTypes.all {
+        buildConfigField "int", "APP_ID", telegramAppId
+        buildConfigField "String", "APP_HASH", javaStringLiteral(telegramAppHash)
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     namespace 'org.telegram.messenger'

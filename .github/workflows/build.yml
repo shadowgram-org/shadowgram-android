@@ -72,7 +72,7 @@ jobs:
           TELEGRAM_APP_HASH: ${{ secrets.TELEGRAM_APP_HASH }}
           ANDROID_RELEASE_STORE_FILE: ${{ runner.temp }}/keystore/release.keystore
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
-          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ vars.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
 
       - name: Upload release APK

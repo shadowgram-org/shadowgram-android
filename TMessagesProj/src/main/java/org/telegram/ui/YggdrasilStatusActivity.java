@@ -157,54 +157,72 @@ public class YggdrasilStatusActivity extends BaseFragment {
         if (ygg != null) {
             try {
                 statusRunning = ygg.isRunning();
-                statusString = statusRunning ? "Running" : "Stopped";
-                addressString = ygg.getAddress();
-                publicKeyString = ygg.getPublicKey();
-
+                if (statusRunning) {
+                    statusString = "Running";
+                } else if (ApplicationLoader.isYggdrasilStarting()) {
+                    statusString = "Restarting...";
+                } else if (ApplicationLoader.yggLastError != null) {
+                    statusString = "Stopped: " + ApplicationLoader.yggLastError;
+                } else {
+                    statusString = "Stopped";
+                }
                 peersList.clear();
-                String peersJson = ygg.getPeersJSON();
-                if (peersJson != null && !peersJson.isEmpty()) {
-                    JSONArray arr = new JSONArray(peersJson);
-                    for (int i = 0; i < arr.length(); i++) {
-                        JSONObject peer = arr.getJSONObject(i);
-                        StringBuilder sb = new StringBuilder();
-                        sb.append(peer.optString("URI", "unknown"));
-                        boolean up = peer.optBoolean("Up", false);
-                        sb.append(up ? " [UP]" : " [DOWN]");
-                        long uptimeNs = peer.optLong("Uptime", 0);
-                        if (uptimeNs > 0) {
-                            sb.append(" | up: ").append(formatUptime(uptimeNs / 1_000_000_000.0));
-                        }
-                        long latencyNs = peer.optLong("Latency", 0);
-                        if (latencyNs > 0) {
-                            sb.append(" | lat: ").append(String.format("%.1fms", latencyNs / 1_000_000.0));
-                        }
-                        long rx = peer.optLong("RXBytes", 0);
-                        long tx = peer.optLong("TXBytes", 0);
-                        if (rx > 0 || tx > 0) {
-                            sb.append(" | rx: ").append(formatBytes(rx));
-                            sb.append(" tx: ").append(formatBytes(tx));
-                        }
-                        int cost = peer.optInt("Cost", 0);
-                        if (cost > 0) {
-                            sb.append(" | cost: ").append(cost);
-                        }
-                        if (peer.has("LastError") && !peer.isNull("LastError")) {
-                            JSONObject err = peer.optJSONObject("LastError");
-                            if (err != null) {
-                                sb.append("\nerr: ").append(err.optString("Op", "")).append(" ").append(err.optString("Net", ""));
+                if (statusRunning) {
+                    addressString = ygg.getAddress();
+                    publicKeyString = ygg.getPublicKey();
+
+                    String peersJson = ygg.getPeersJSON();
+                    if (peersJson != null && !peersJson.isEmpty()) {
+                        JSONArray arr = new JSONArray(peersJson);
+                        for (int i = 0; i < arr.length(); i++) {
+                            JSONObject peer = arr.getJSONObject(i);
+                            StringBuilder sb = new StringBuilder();
+                            sb.append(peer.optString("URI", "unknown"));
+                            boolean up = peer.optBoolean("Up", false);
+                            sb.append(up ? " [UP]" : " [DOWN]");
+                            long uptimeNs = peer.optLong("Uptime", 0);
+                            if (uptimeNs > 0) {
+                                sb.append(" | up: ").append(formatUptime(uptimeNs / 1_000_000_000.0));
                             }
+                            long latencyNs = peer.optLong("Latency", 0);
+                            if (latencyNs > 0) {
+                                sb.append(" | lat: ").append(String.format("%.1fms", latencyNs / 1_000_000.0));
+                            }
+                            long rx = peer.optLong("RXBytes", 0);
+                            long tx = peer.optLong("TXBytes", 0);
+                            if (rx > 0 || tx > 0) {
+                                sb.append(" | rx: ").append(formatBytes(rx));
+                                sb.append(" tx: ").append(formatBytes(tx));
+                            }
+                            int cost = peer.optInt("Cost", 0);
+                            if (cost > 0) {
+                                sb.append(" | cost: ").append(cost);
+                            }
+                            if (peer.has("LastError") && !peer.isNull("LastError")) {
+                                JSONObject err = peer.optJSONObject("LastError");
+                                if (err != null) {
+                                    sb.append("\nerr: ").append(err.optString("Op", "")).append(" ").append(err.optString("Net", ""));
+                                }
+                            }
+                            peersList.add(sb.toString());
                         }
-                        peersList.add(sb.toString());
                     }
+                } else {
+                    addressString = "N/A";
+                    publicKeyString = "N/A";
                 }
             } catch (Exception e) {
                 statusString = "Error: " + e.getMessage();
                 statusRunning = false;
+                addressString = "N/A";
+                publicKeyString = "N/A";
+                peersList.clear();
             }
         } else {
-            if (ApplicationLoader.isPeersReiniting) {
-                statusString = "Initializing...";
+            if (ApplicationLoader.isYggdrasilStarting() || ApplicationLoader.isPeersReiniting) {
+                statusString = "Starting...";
+            } else if (ApplicationLoader.yggLastError != null) {
+                statusString = "Not running: " + ApplicationLoader.yggLastError;
             } else {
                 statusString = "Not started";
             }
@@ -299,6 +317,11 @@ public class YggdrasilStatusActivity extends BaseFragment {
 
     private void retryPeers() {
         Yggstack ygg = ApplicationLoader.yggInstance;
+        if (!ApplicationLoader.isYggdrasilRunning()) {
+            ApplicationLoader.requestYggdrasilRestart("settings retry");
+            Toast.makeText(getParentActivity(), "Restarting Yggdrasil", Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (ygg != null) {
             try {
                 ygg.retryPeersNow();
@@ -349,8 +372,9 @@ public class YggdrasilStatusActivity extends BaseFragment {
     private void connectToPingedPeer(int index) {
         java.util.List<link.yggdrasil.yggstack.android.data.PublicPeerInfo> pinged = ApplicationLoader.lastPingedPeers;
         if (pinged == null || index < 0 || index >= pinged.size()) return;
-        if (ApplicationLoader.yggInstance == null) {
-            Toast.makeText(getParentActivity(), "Yggdrasil not running", Toast.LENGTH_SHORT).show();
+        if (!ApplicationLoader.isYggdrasilRunning()) {
+            ApplicationLoader.requestYggdrasilRestart("settings peer selection");
+            Toast.makeText(getParentActivity(), "Yggdrasil not running, restarting", Toast.LENGTH_SHORT).show();
             return;
         }
         link.yggdrasil.yggstack.android.data.PublicPeerInfo peer = pinged.get(index);

@@ -1641,6 +1641,11 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
         if (!allowOverlayTitle || parentFragment.parentLayout == null) {
             return;
         }
+        if (titleId == R.string.ConnectingToProxyWithDots) {
+            title = "Connecting";
+            titleId = R.string.Connecting;
+            action = null;
+        }
         overlayTitleToSet[0] = title;
         overlayTitleToSet[1] = titleId;
         overlayTitleToSet[2] = action;
@@ -1653,12 +1658,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
         lastOverlayTitle = title;
 
         if (additionalSubTitleOverlayContainer != null) {
-            final CharSequence textToSet;
-            if (titleId == R.string.ConnectingToProxyWithDots) {
-                textToSet = AndroidUtilities.replaceArrows(getString(R.string.TitleSetupProxy), true, dp(8f / 3f), dp(2));
-            } else {
-                textToSet = null;
-            }
+            final CharSequence textToSet = null;
             additionalSubTitleOverlayContainer.setText(textToSet, true);
         }
 

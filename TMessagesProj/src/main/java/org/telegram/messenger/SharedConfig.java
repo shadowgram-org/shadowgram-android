@@ -528,8 +528,10 @@ public class SharedConfig {
             passportConfigJson = preferences.getString("passportConfigJson", "");
             passportConfigHash = preferences.getInt("passportConfigHash", 0);
             storageCacheDir = preferences.getString("storageCacheDir", null);
-            proxyRotationEnabled = preferences.getBoolean("proxyRotationEnabled", false);
-            proxyRotationTimeout = preferences.getInt("proxyRotationTimeout", ProxyRotationController.DEFAULT_TIMEOUT_INDEX);
+            proxyRotationEnabled = BuildVars.MANUAL_PROXY_ENABLED && preferences.getBoolean("proxyRotationEnabled", false);
+            proxyRotationTimeout = BuildVars.MANUAL_PROXY_ENABLED
+                    ? preferences.getInt("proxyRotationTimeout", ProxyRotationController.DEFAULT_TIMEOUT_INDEX)
+                    : ProxyRotationController.DEFAULT_TIMEOUT_INDEX;
             String authKeyString = preferences.getString("pushAuthKey", null);
             if (!TextUtils.isEmpty(authKeyString)) {
                 pushAuthKey = Base64.decode(authKeyString, Base64.DEFAULT);
@@ -1410,6 +1412,12 @@ public class SharedConfig {
         if (proxyListLoaded) {
             return;
         }
+        if (!BuildVars.MANUAL_PROXY_ENABLED) {
+            proxyListLoaded = true;
+            proxyList.clear();
+            currentProxy = null;
+            return;
+        }
         SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
         String proxyAddress = preferences.getString("proxy_ip", "");
         String proxyUsername = preferences.getString("proxy_user", "");
@@ -1525,7 +1533,9 @@ public class SharedConfig {
     }
 
     public static boolean isProxyEnabled() {
-        return MessagesController.getGlobalMainSettings().getBoolean("proxy_enabled", false) && currentProxy != null;
+        return BuildVars.MANUAL_PROXY_ENABLED
+                && MessagesController.getGlobalMainSettings().getBoolean("proxy_enabled", false)
+                && currentProxy != null;
     }
 
     public static void deleteProxy(ProxyInfo proxyInfo) {

@@ -76,6 +76,8 @@ public:
     void setPushConnectionEnabled(bool value);
     void applyDnsConfig(NativeByteBuffer *buffer, std::string phone, int32_t date);
     int64_t checkProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, onRequestTimeFunc requestTimeFunc, jobject ptr1);
+    int64_t checkDirect(onRequestTimeFunc requestTimeFunc, jobject ptr1);
+    void cancelConnectionCheck(int64_t checkId);
 
 #ifdef ANDROID
     void sendRequest(TLObject *object, onCompleteFunc onComplete, onQuickAckFunc onQuickAck, onWriteToSocketFunc onWriteToSocket, onRequestClearFunc onClear, uint32_t flags, uint32_t datacenterId, ConnectionType connectionType, bool immediate, int32_t requestToken);
@@ -135,6 +137,8 @@ private:
 
     void scheduleCheckProxyInternal(ProxyCheckInfo *proxyCheckInfo);
     void checkProxyInternal(ProxyCheckInfo *proxyCheckInfo);
+    void completeConnectionCheck(int64_t checkId, int64_t result, bool notify, bool suspendConnection);
+    void startNextConnectionCheck();
 
     int32_t instanceNum = 0;
     uint32_t configVersion = 5;
@@ -190,7 +194,7 @@ private:
     std::string proxyAddress = "";
     std::string proxySecret = "";
     uint16_t proxyPort = 1080;
-    int32_t lastPingProxyId = 2000000;
+    std::atomic<int64_t> lastPingProxyId{2000000};
     std::vector<std::unique_ptr<ProxyCheckInfo>> proxyCheckQueue;
     std::vector<std::unique_ptr<ProxyCheckInfo>> proxyActiveChecks;
 

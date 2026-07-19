@@ -11,6 +11,7 @@
 
 #include <sstream>
 #include "Defines.h"
+#include "ConnectionSocket.h"
 
 #ifdef ANDROID
 #include <jni.h>
@@ -28,6 +29,8 @@ public:
     std::string username;
     std::string password;
     std::string secret;
+    ProxyRouteMode routeMode = ProxyRouteMode::OverrideProxy;
+    uint32_t datacenterId = 0;
     int64_t pingId = 0;
     onRequestTimeFunc onRequestTime;
     int32_t instanceNum = 0;

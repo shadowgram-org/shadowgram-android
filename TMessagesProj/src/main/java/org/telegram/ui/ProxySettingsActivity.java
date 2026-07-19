@@ -44,6 +44,7 @@ import android.widget.TextView;
 import androidx.core.graphics.ColorUtils;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
@@ -175,6 +176,15 @@ public class ProxySettingsActivity extends BaseFragment {
     public ProxySettingsActivity(SharedConfig.ProxyInfo proxyInfo) {
         super();
         currentProxyInfo = proxyInfo;
+    }
+
+    @Override
+    public boolean onFragmentCreate() {
+        if (!BuildVars.MANUAL_PROXY_ENABLED) {
+            AndroidUtilities.showManualProxyDisabledNotice(getParentActivity());
+            return false;
+        }
+        return super.onFragmentCreate();
     }
 
     private ClipboardManager.OnPrimaryClipChangedListener clipChangedListener = this::updatePasteCell;

@@ -65,7 +65,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class ApplicationLoader extends Application {
 
@@ -86,13 +86,32 @@ public class ApplicationLoader extends Application {
     private static final String YGG_LOG_TAG = "YGG_TEST";
     private static final String YGG_PROXY_HOST = "127.0.0.1";
     private static final int YGG_PROXY_PORT = 9001;
-    private static final String YGG_PROXY_SECRET = "00000000000000000000000000000001";
     private static final long YGG_WATCHDOG_INTERVAL_MS = 1_000L;
-    private static final long YGG_RESTART_THROTTLE_MS = 1_000L;
+    private static final long YGG_NO_PEER_GRACE_MS = 10_000L;
+    private static final long NO_YGG_RESTART_GENERATION = Long.MIN_VALUE;
+    private static final long[] YGG_RESTART_DELAYS_MS = {5_000L, 15_000L, 30_000L, 60_000L};
     private static final Object yggLifecycleLock = new Object();
+    private static final Object yggRestartRequestLock = new Object();
+    private static final DispatchQueue yggWatchdogQueue = new DispatchQueue("yggWatchdogQueue");
     private static final AtomicBoolean yggStartInProgress = new AtomicBoolean(false);
     private static final AtomicBoolean yggWatchdogStarted = new AtomicBoolean(false);
+    private static final AtomicBoolean yggPeerSwitchInProgress = new AtomicBoolean(false);
+    private static final AtomicLong yggGeneration = new AtomicLong();
+    private static final AtomicLong networkGeneration = new AtomicLong();
+    private static String pendingYggForcedRestartReason;
+    private static long pendingYggForcedRestartGeneration = NO_YGG_RESTART_GENERATION;
+    private static long activeYggForcedRestartGeneration = NO_YGG_RESTART_GENERATION;
     private static volatile long lastYggStartAttemptTime;
+    private static volatile long nextYggStartAttemptTime;
+    private static volatile long yggNoPeerSince;
+    private static volatile int yggRestartAttempt;
+    private static volatile boolean lastReportedYggRunning;
+    private static volatile boolean lastReportedYggPeerUp;
+    private static volatile long lastReportedYggGeneration = Long.MIN_VALUE;
+    private static volatile boolean yggNetworkOnline = true;
+    private static final long NETWORK_CHANGE_DEBOUNCE_MS = 500L;
+    private static volatile String lastNetworkFingerprint;
+    private static Runnable networkChangeRunnable;
 
     private static ConnectivityManager connectivityManager;
     private static volatile boolean applicationInited = false;
@@ -114,20 +133,8 @@ public class ApplicationLoader extends Application {
     private static IMapsProvider mapsProvider;
     private static ILocationServiceProvider locationServiceProvider;
 
-    private static final Runnable yggWatchdogRunnable = new Runnable() {
-        @Override
-        public void run() {
-            try {
-                if (!isYggdrasilRunning()) {
-                    maybeRestartYggdrasil("watchdog");
-                }
-            } finally {
-                if (applicationHandler != null) {
-                    AndroidUtilities.runOnUIThread(this, YGG_WATCHDOG_INTERVAL_MS);
-                }
-            }
-        }
-    };
+    private static final Runnable yggWatchdogRunnable =
+            () -> yggWatchdogQueue.postRunnable(ApplicationLoader::sampleYggdrasilForWatchdog);
 
     @Override
     protected void attachBaseContext(Context base) {
@@ -257,18 +264,7 @@ public class ApplicationLoader extends Application {
             BroadcastReceiver networkStateReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
-                    try {
-                        currentNetworkInfo = connectivityManager.getActiveNetworkInfo();
-                    } catch (Throwable ignore) {
-
-                    }
-
-                    boolean isSlow = isConnectionSlow();
-                    for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
-                        ConnectionsManager.getInstance(a).checkConnection();
-                        FileLoader.getInstance(a).onNetworkChanged(isSlow);
-                    }
-                    onYggdrasilNetworkChanged();
+                    scheduleNetworkStateUpdate("connectivity broadcast");
                 }
             };
             IntentFilter filter = new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION);
@@ -312,6 +308,8 @@ public class ApplicationLoader extends Application {
                 SendMessagesHelper.getInstance(a).checkUnsentMessages();
             }
         }
+        TelegramRoutingController.init();
+        scheduleNetworkStateUpdate("application init");
 
         ApplicationLoader app = (ApplicationLoader) ApplicationLoader.applicationContext;
         app.initPushServices();
@@ -331,6 +329,56 @@ public class ApplicationLoader extends Application {
         super();
     }
 
+    /**
+     * Shadowgram owns the runtime transport and does not support Telegram's user-configured
+     * proxies. Remove legacy state synchronously before any ConnectionsManager can read it.
+     * This intentionally runs on every process start so restored preferences cannot reactivate
+     * a custom proxy after the one-time app upgrade path has already run.
+     */
+    private static void eraseLegacyProxyConfiguration() {
+        if (applicationContext == null) {
+            return;
+        }
+        SharedPreferences mainConfig = applicationContext.getSharedPreferences("mainconfig", MODE_PRIVATE);
+        String[] mainKeys = {
+                "proxy_enabled", "proxy_enabled_calls", "proxy_ip", "proxy_port",
+                "proxy_user", "proxy_pass", "proxy_secret", "proxy_list",
+                "proxycheckstatusip", "proxyDialogAddress"
+        };
+        SharedPreferences.Editor mainEditor = null;
+        for (String key : mainKeys) {
+            if (mainConfig.contains(key)) {
+                if (mainEditor == null) {
+                    mainEditor = mainConfig.edit();
+                }
+                mainEditor.remove(key);
+            }
+        }
+        // promo_dialog_type == 0 is Telegram's proxy-sponsored dialog. Preserve PSA/other
+        // promo dialogs while removing any stale proxy-specific dialog and type marker.
+        if (mainConfig.getInt("promo_dialog_type", 0) == 0
+                && (mainConfig.contains("proxy_dialog") || mainConfig.contains("promo_dialog_type"))) {
+            if (mainEditor == null) {
+                mainEditor = mainConfig.edit();
+            }
+            mainEditor.remove("proxy_dialog");
+            mainEditor.remove("promo_dialog_type");
+        }
+        if (mainEditor != null && !mainEditor.commit()) {
+            Log.w(YGG_LOG_TAG, "Failed to erase legacy proxy configuration");
+        }
+
+        SharedPreferences userConfig = applicationContext.getSharedPreferences("userconfing", MODE_PRIVATE);
+        if (userConfig.contains("proxyRotationEnabled") || userConfig.contains("proxyRotationTimeout")) {
+            if (!userConfig.edit()
+                    .remove("proxyRotationEnabled")
+                    .remove("proxyRotationTimeout")
+                    .commit()) {
+                Log.w(YGG_LOG_TAG, "Failed to erase legacy proxy rotation configuration");
+            }
+        }
+    }
+
     public static boolean isYggdrasilStarting() {
         return yggStartInProgress.get();
     }
@@ -339,15 +387,138 @@ public class ApplicationLoader extends Application {
         return isYggstackRunning(yggInstance);
     }
 
+    public static long getYggdrasilGeneration() {
+        return yggGeneration.get();
+    }
+
+    public static boolean hasYggdrasilUpPeer() {
+        Yggstack ygg = yggInstance;
+        if (!isYggstackRunning(ygg)) {
+            return false;
+        }
+        return hasYggdrasilUpPeer(ygg);
+    }
+
+    private static boolean hasYggdrasilUpPeer(Yggstack ygg) {
+        try {
+            String peersJson = ygg.getPeersJSON();
+            if (TextUtils.isEmpty(peersJson)) {
+                return false;
+            }
+            JSONArray peers = new JSONArray(peersJson);
+            for (int i = 0; i < peers.length(); i++) {
+                if (peers.getJSONObject(i).optBoolean("Up", false)) {
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            yggLastError = getThrowableMessage(t);
+            Log.w(YGG_LOG_TAG, "Failed to read Yggstack peer state", t);
+        }
+        return false;
+    }
+
+    private static void sampleYggdrasilForWatchdog() {
+        final Yggstack checkedYgg;
+        final long generation;
+        final boolean running;
+        final boolean peerUp;
+        synchronized (yggLifecycleLock) {
+            checkedYgg = yggInstance;
+            generation = yggGeneration.get();
+            running = isYggstackRunning(checkedYgg);
+            peerUp = running && hasYggdrasilUpPeer(checkedYgg);
+        }
+        AndroidUtilities.runOnUIThread(() -> handleYggdrasilWatchdogResult(
+                checkedYgg, generation, running, peerUp));
+    }
+
+    private static void handleYggdrasilWatchdogResult(
+            Yggstack checkedYgg, long generation, boolean running, boolean peerUp) {
+        try {
+            // A stop, replacement, or peer mutation completed after this sample was taken.
+            // Ignore the stale result; the next serialized poll will report the new generation.
+            if (checkedYgg != yggInstance || generation != yggGeneration.get()) {
+                return;
+            }
+            long now = SystemClock.elapsedRealtime();
+            if (generation != lastReportedYggGeneration || running != lastReportedYggRunning || peerUp != lastReportedYggPeerUp) {
+                lastReportedYggGeneration = generation;
+                lastReportedYggRunning = running;
+                lastReportedYggPeerUp = peerUp;
+                TelegramRoutingController.onYggdrasilStateChanged(generation, running, peerUp);
+            }
+            if (!yggNetworkOnline) {
+                yggNoPeerSince = 0;
+                return;
+            }
+            if (!running) {
+                yggNoPeerSince = 0;
+                maybeRestartYggdrasil("watchdog");
+            } else if (peerUp) {
+                yggNoPeerSince = 0;
+                yggRestartAttempt = 0;
+                nextYggStartAttemptTime = 0;
+            } else if (yggNoPeerSince == 0) {
+                yggNoPeerSince = now;
+                retryYggdrasilPeers();
+            } else if (now - yggNoPeerSince >= YGG_NO_PEER_GRACE_MS &&
+                    !yggStartInProgress.get() && now >= nextYggStartAttemptTime) {
+                yggNoPeerSince = now;
+                requestYggdrasilRestart("watchdog: no peers up", true);
+            }
+        } finally {
+            if (applicationHandler != null) {
+                AndroidUtilities.runOnUIThread(yggWatchdogRunnable, YGG_WATCHDOG_INTERVAL_MS);
+            }
+        }
+    }
+
+    public static void retryYggdrasilPeers() {
+        Yggstack ygg = yggInstance;
+        if (!isYggstackRunning(ygg)) {
+            maybeRestartYggdrasil("route controller");
+            return;
+        }
+        try {
+            ygg.retryPeersNow();
+        } catch (Throwable t) {
+            yggLastError = getThrowableMessage(t);
+            Log.w(YGG_LOG_TAG, "Failed to retry Yggstack peers", t);
+        }
+    }
+
+    public static void ensureYggdrasilStarted() {
+        if (!isYggdrasilRunning()) {
+            maybeRestartYggdrasil("route controller");
+        }
+    }
+
     private static String getThrowableMessage(Throwable t) {
         String message = t.getMessage();
         return message != null ? message : t.getClass().getSimpleName();
     }
 
     public static void requestYggdrasilRestart(String reason) {
+        requestYggdrasilRestart(reason, false);
+    }
+
+    public static void requestYggdrasilRestart(String reason, boolean force) {
+        requestYggdrasilRestart(reason, force,
+                force ? yggGeneration.get() : NO_YGG_RESTART_GENERATION);
+    }
+
+    private static void requestYggdrasilRestart(String reason, boolean force, long requestedGeneration) {
         ApplicationLoader app = applicationLoaderInstance;
         if (app != null) {
-            app.initYggdrasil();
+            if (force && applicationHandler != null) {
+                AndroidUtilities.runOnUIThread(() -> {
+                    TelegramRoutingController.onYggdrasilStopping();
+                    app.initYggdrasil(true, reason, requestedGeneration);
+                });
+            } else {
+                app.initYggdrasil(force, reason, requestedGeneration);
+            }
         } else {
             Log.w(YGG_LOG_TAG, "Cannot restart Yggstack (no ApplicationLoader): " + reason);
         }
@@ -377,43 +548,12 @@ public class ApplicationLoader extends Application {
         }
     }
 
-    private static void applyYggProxySettings() {
-        try {
-            ConnectionsManager.setProxySettings(true, YGG_PROXY_HOST, YGG_PROXY_PORT, "", "", YGG_PROXY_SECRET);
-        } catch (Throwable t) {
-            yggLastError = getThrowableMessage(t);
-            Log.e(YGG_LOG_TAG, "Failed to apply Yggstack proxy settings", t);
-        }
-    }
-
-    private static void restoreConfiguredProxySettings() {
-        try {
-            if (applicationContext == null) {
-                return;
-            }
-            SharedPreferences preferences = applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
-            String proxyAddress = preferences.getString("proxy_ip", "");
-            String proxyUsername = preferences.getString("proxy_user", "");
-            String proxyPassword = preferences.getString("proxy_pass", "");
-            String proxySecret = preferences.getString("proxy_secret", "");
-            int proxyPort = preferences.getInt("proxy_port", 1080);
-
-            if (preferences.getBoolean("proxy_enabled", false) && !TextUtils.isEmpty(proxyAddress)) {
-                ConnectionsManager.setProxySettings(true, proxyAddress, proxyPort, proxyUsername, proxyPassword, proxySecret);
-            } else {
-                ConnectionsManager.setProxySettings(false, "", 1080, "", "", "");
-            }
-        } catch (Throwable t) {
-            Log.w(YGG_LOG_TAG, "Failed to restore configured proxy settings", t);
-        }
-    }
-
     private static void maybeRestartYggdrasil(String reason) {
         if (yggStartInProgress.get()) {
             return;
         }
         long now = SystemClock.elapsedRealtime();
-        if (lastYggStartAttemptTime != 0 && now - lastYggStartAttemptTime < YGG_RESTART_THROTTLE_MS) {
+        if (now < nextYggStartAttemptTime) {
             return;
         }
         Log.w(YGG_LOG_TAG, "Yggstack is not running; restarting from " + reason);
@@ -426,7 +566,97 @@ public class ApplicationLoader extends Application {
         }
     }
 
-    private static void onYggdrasilNetworkChanged() {
+    private static String getNetworkFingerprint() {
+        try {
+            if (connectivityManager == null && applicationContext != null) {
+                connectivityManager = (ConnectivityManager) applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+            }
+            if (connectivityManager == null) {
+                return "none";
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Network network = connectivityManager.getActiveNetwork();
+                NetworkCapabilities capabilities = network != null ? connectivityManager.getNetworkCapabilities(network) : null;
+                if (network == null || capabilities == null) {
+                    return "none";
+                }
+                int transports = 0;
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) transports |= 1;
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) transports |= 2;
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) transports |= 4;
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) transports |= 8;
+                return network + ":" + transports + ":" +
+                        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) + ":" +
+                        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+            }
+            NetworkInfo info = connectivityManager.getActiveNetworkInfo();
+            return info == null ? "none" : info.getType() + ":" + info.getSubtype() + ":" + info.getState();
+        } catch (Throwable t) {
+            return "unknown:" + isNetworkOnlineRealtime();
+        }
+    }
+
+    private static void scheduleNetworkStateUpdate(String reason) {
+        if (applicationHandler == null) {
+            return;
+        }
+        AndroidUtilities.runOnUIThread(() -> {
+            try {
+                if (connectivityManager == null) {
+                    connectivityManager = (ConnectivityManager) applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+                }
+                currentNetworkInfo = connectivityManager != null ? connectivityManager.getActiveNetworkInfo() : null;
+            } catch (Throwable ignore) {
+            }
+
+            String fingerprint = getNetworkFingerprint();
+            if (fingerprint.equals(lastNetworkFingerprint)) {
+                return;
+            }
+            lastNetworkFingerprint = fingerprint;
+            long generation = networkGeneration.incrementAndGet();
+            boolean online = !"none".equals(fingerprint) && isNetworkOnlineRealtime();
+            prepareYggdrasilForNetworkChange(online);
+            Log.d(YGG_LOG_TAG, "Network generation " + generation + " from " + reason + ": " + fingerprint);
+
+            if (networkChangeRunnable != null) {
+                AndroidUtilities.cancelRunOnUIThread(networkChangeRunnable);
+            }
+            networkChangeRunnable = () -> {
+                if (generation != networkGeneration.get()) {
+                    return;
+                }
+                networkChangeRunnable = null;
+                boolean isSlow = isConnectionSlow();
+                for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
+                    ConnectionsManager.getInstance(a).checkConnection();
+                    FileLoader.getInstance(a).onNetworkChanged(isSlow);
+                }
+                onYggdrasilNetworkChanged(online);
+            };
+            AndroidUtilities.runOnUIThread(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
+            TelegramRoutingController.onNetworkChanged(generation, online);
+        });
+    }
+
+    private static void prepareYggdrasilForNetworkChange(boolean online) {
+        yggNetworkOnline = online;
+        if (!online) {
+            yggNoPeerSince = 0;
+            return;
+        }
+        lastYggStartAttemptTime = 0;
+        nextYggStartAttemptTime = 0;
+        yggRestartAttempt = 0;
+        // Install the fresh grace period as soon as the fingerprint is accepted, before the
+        // debounced retry, so an already queued watchdog result cannot restart the old route.
+        yggNoPeerSince = yggInstance != null ? SystemClock.elapsedRealtime() : 0;
+    }
+
+    private static void onYggdrasilNetworkChanged(boolean online) {
+        if (!online) {
+            return;
+        }
         Yggstack ygg = yggInstance;
         if (isYggstackRunning(ygg)) {
             try {
@@ -436,6 +666,7 @@ public class ApplicationLoader extends Application {
                 Log.w(YGG_LOG_TAG, "Failed to retry Yggstack peers after network change", t);
             }
         } else {
+            yggNoPeerSince = 0;
             maybeRestartYggdrasil("network change");
         }
     }
@@ -474,15 +705,60 @@ public class ApplicationLoader extends Application {
 
 
     /**
-     * Swap the active Yggdrasil peer: removes all current peers, adds the new one, updates saved config.
-     * Safe to call from any thread.
+     * Swap the active peer without tearing down the current route first. The candidate must report
+     * Up before the old peer is removed; otherwise the old peer remains active.
      */
     public static void switchToPeer(String peerUri) {
-        Yggstack ygg = yggInstance;
-        if (!isYggstackRunning(ygg)) {
+        if (TextUtils.isEmpty(peerUri)) {
+            return;
+        }
+        if (!isYggdrasilRunning()) {
             requestYggdrasilRestart("peer switch while stopped");
             return;
         }
+        if (!yggPeerSwitchInProgress.compareAndSet(false, true)) {
+            Log.d(YGG_LOG_TAG, "Peer switch already in progress");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                switchToPeerInternal(peerUri);
+            } finally {
+                yggPeerSwitchInProgress.set(false);
+            }
+        }, "YggPeerSwitch").start();
+    }
+
+    private static String normalizePeerUri(String uri) {
+        if (uri == null) {
+            return "";
+        }
+        int query = uri.indexOf('?');
+        return query >= 0 ? uri.substring(0, query) : uri;
+    }
+
+    private static boolean isPeerUp(Yggstack ygg, String normalizedUri) throws Exception {
+        String peersJson = ygg.getPeersJSON();
+        if (TextUtils.isEmpty(peersJson)) {
+            return false;
+        }
+        JSONArray peers = new JSONArray(peersJson);
+        for (int i = 0; i < peers.length(); i++) {
+            JSONObject peer = peers.getJSONObject(i);
+            if (normalizedUri.equals(normalizePeerUri(peer.optString("URI", ""))) && peer.optBoolean("Up", false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void switchToPeerInternal(String peerUri) {
+        String newUri = buildPeerUri(peerUri);
+        String normalizedNewUri = normalizePeerUri(newUri);
+        Yggstack ygg;
+        ArrayList<String> oldPeers = new ArrayList<>();
+        boolean candidateAlreadyPresent = false;
+
         synchronized (yggLifecycleLock) {
             ygg = yggInstance;
             if (!isYggstackRunning(ygg)) {
@@ -490,52 +766,94 @@ public class ApplicationLoader extends Application {
                 return;
             }
             try {
-                // Remove all current peers — try both bare URI and full URI with params,
-                // because getPeersJSON() returns bare URIs but removePeer may need the URI as added
                 String peersJson = ygg.getPeersJSON();
                 if (peersJson != null && !peersJson.isEmpty()) {
                     JSONArray arr = new JSONArray(peersJson);
                     for (int i = 0; i < arr.length(); i++) {
-                        JSONObject p = arr.getJSONObject(i);
-                        String uri = p.optString("URI", "");
+                        String uri = arr.getJSONObject(i).optString("URI", "");
                         if (!uri.isEmpty()) {
-                            Log.d(YGG_LOG_TAG, "switchToPeer: removing " + uri);
-                            ygg.removePeer(uri);
-                            ygg.removePeer(buildPeerUri(uri));
+                            oldPeers.add(uri);
+                            candidateAlreadyPresent |= normalizedNewUri.equals(normalizePeerUri(uri));
                         }
                     }
                 }
-
-                // Add the new peer
-                String newUri = buildPeerUri(peerUri);
-                Log.d(YGG_LOG_TAG, "switchToPeer: adding " + newUri);
-                ygg.addPeer(newUri);
-
-                Log.d(YGG_LOG_TAG, "switchToPeer: peers after: " + ygg.getPeersJSON());
-
-                // Update saved config
-                SharedPreferences prefs = applicationContext.getSharedPreferences("yggstack_prefs", MODE_PRIVATE);
-                String configJson = prefs.getString("ygg_config", null);
-                if (configJson != null) {
-                    JSONObject config = new JSONObject(configJson);
-                    JSONArray peersArray = new JSONArray();
-                    peersArray.put(newUri);
-                    config.put("Peers", peersArray);
-                    prefs.edit().putString("ygg_config", config.toString()).apply();
+                if (!candidateAlreadyPresent) {
+                    Log.d(YGG_LOG_TAG, "switchToPeer: adding candidate " + newUri);
+                    ygg.addPeer(newUri);
                 }
             } catch (Exception e) {
                 yggLastError = getThrowableMessage(e);
                 Log.e(YGG_LOG_TAG, "Peer switch failed: " + yggLastError);
+                return;
             }
         }
-    }
 
-    private void swapPeer(PublicPeerInfo newPeer, AtomicReference<String> currentPeerUri,
-                          AtomicReference<Long> lastSwitchTime) {
-        Log.d(YGG_LOG_TAG, "Switching to better peer: " + newPeer.getUri() + " (RTT: " + newPeer.getRtt() + "ms) from " + currentPeerUri.get());
-        switchToPeer(newPeer.getUri());
-        currentPeerUri.set(newPeer.getUri());
-        lastSwitchTime.set(System.currentTimeMillis());
+        boolean candidateUp = false;
+        long deadline = SystemClock.elapsedRealtime() + YGG_NO_PEER_GRACE_MS;
+        while (SystemClock.elapsedRealtime() < deadline && ygg == yggInstance && isYggstackRunning(ygg)) {
+            try {
+                if (isPeerUp(ygg, normalizedNewUri)) {
+                    candidateUp = true;
+                    break;
+                }
+                Thread.sleep(250L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                yggLastError = getThrowableMessage(e);
+                break;
+            }
+        }
+
+        synchronized (yggLifecycleLock) {
+            if (ygg != yggInstance || !isYggstackRunning(ygg)) {
+                return;
+            }
+            try {
+                if (!candidateUp) {
+                    if (!candidateAlreadyPresent) {
+                        ygg.removePeer(newUri);
+                        ygg.removePeer(normalizedNewUri);
+                    }
+                    yggLastError = "Selected peer did not become ready";
+                    Log.w(YGG_LOG_TAG, "switchToPeer: candidate did not become ready; keeping old peer(s)");
+                    return;
+                }
+
+                // The ready candidate was already added, so publish a new generation before any
+                // old-peer removal or persistence can fail after partially changing topology.
+                yggGeneration.incrementAndGet();
+                for (String uri : oldPeers) {
+                    if (!normalizedNewUri.equals(normalizePeerUri(uri))) {
+                        Log.d(YGG_LOG_TAG, "switchToPeer: removing old peer " + uri);
+                        ygg.removePeer(uri);
+                        ygg.removePeer(buildPeerUri(uri));
+                    }
+                }
+
+                yggLastError = null;
+                Log.d(YGG_LOG_TAG, "switchToPeer: candidate ready; peer switch complete");
+
+                try {
+                    SharedPreferences prefs = applicationContext.getSharedPreferences("yggstack_prefs", MODE_PRIVATE);
+                    String configJson = prefs.getString("ygg_config", null);
+                    if (configJson != null) {
+                        JSONObject config = new JSONObject(configJson);
+                        JSONArray peersArray = new JSONArray();
+                        peersArray.put(newUri);
+                        config.put("Peers", peersArray);
+                        prefs.edit().putString("ygg_config", config.toString()).apply();
+                    }
+                } catch (Exception e) {
+                    yggLastError = getThrowableMessage(e);
+                    Log.e(YGG_LOG_TAG, "Peer switch completed but config persistence failed: " + yggLastError, e);
+                }
+            } catch (Exception e) {
+                yggLastError = getThrowableMessage(e);
+                Log.e(YGG_LOG_TAG, "Peer switch failed: " + yggLastError, e);
+            }
+        }
     }
 
     private void startYggstack(JSONObject yggConfig, List<PublicPeerInfo> peers) throws Exception {
@@ -543,7 +861,6 @@ public class ApplicationLoader extends Application {
             Yggstack existing = yggInstance;
             if (isYggstackRunning(existing)) {
                 Log.d(YGG_LOG_TAG, "Yggstack already running; skipping duplicate start");
-                applyYggProxySettings();
                 return;
             }
             if (existing != null) {
@@ -571,13 +888,15 @@ public class ApplicationLoader extends Application {
                     throw new Exception("Yggstack start returned but instance is not running");
                 }
                 yggInstance = ygg;
+                yggGeneration.incrementAndGet();
+                yggNoPeerSince = SystemClock.elapsedRealtime();
                 yggLastError = null;
                 Log.i(YGG_LOG_TAG, "Yggstack TUNNEL active on " + YGG_PROXY_PORT + ". My IP: " + ygg.getAddress());
             } catch (Throwable t) {
                 stopYggstackQuietly(ygg);
                 yggInstance = null;
+                yggGeneration.incrementAndGet();
                 yggLastError = getThrowableMessage(t);
-                restoreConfiguredProxySettings();
                 if (t instanceof Exception) {
                     throw (Exception) t;
                 }
@@ -585,23 +904,52 @@ public class ApplicationLoader extends Application {
             }
         }
 
-        // Enable proxy only after the tunnel is confirmed to be listening.
-        applyYggProxySettings();
     }
 
     private void initYggdrasil() {
-        if (isYggdrasilRunning()) {
-            applyYggProxySettings();
+        initYggdrasil(false, "startup", NO_YGG_RESTART_GENERATION);
+    }
+
+    private void initYggdrasil(boolean force, String reason, long requestedGeneration) {
+        if (!force && isYggdrasilRunning()) {
             return;
         }
-        if (!yggStartInProgress.compareAndSet(false, true)) {
-            Log.d(YGG_LOG_TAG, "Yggstack start already in progress");
-            return;
+        synchronized (yggRestartRequestLock) {
+            if (!yggStartInProgress.compareAndSet(false, true)) {
+                if (force) {
+                    if (activeYggForcedRestartGeneration == requestedGeneration) {
+                        Log.d(YGG_LOG_TAG, "Coalesced forced Yggstack restart already covered for generation " + requestedGeneration);
+                    } else {
+                        pendingYggForcedRestartReason = reason;
+                        pendingYggForcedRestartGeneration = requestedGeneration;
+                        Log.d(YGG_LOG_TAG, "Queued forced Yggstack restart for generation "
+                                + requestedGeneration + " while startup is in progress: " + reason);
+                    }
+                }
+                Log.d(YGG_LOG_TAG, "Yggstack start already in progress");
+                return;
+            }
+            activeYggForcedRestartGeneration = force
+                    ? requestedGeneration : NO_YGG_RESTART_GENERATION;
         }
         lastYggStartAttemptTime = SystemClock.elapsedRealtime();
+        long restartDelay = YGG_RESTART_DELAYS_MS[Math.min(yggRestartAttempt, YGG_RESTART_DELAYS_MS.length - 1)];
+        long attemptNetworkGeneration = networkGeneration.get();
+        yggRestartAttempt = Math.min(yggRestartAttempt + 1, YGG_RESTART_DELAYS_MS.length - 1);
         new Thread(() -> {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
             try {
+                if (force) {
+                    synchronized (yggLifecycleLock) {
+                        Yggstack existing = yggInstance;
+                        yggInstance = null;
+                        if (existing != null) {
+                            Log.w(YGG_LOG_TAG, "Force restarting Yggstack: " + reason);
+                            stopYggstackQuietly(existing);
+                            yggGeneration.incrementAndGet();
+                        }
+                    }
+                }
                 SharedPreferences prefs = getSharedPreferences("yggstack_prefs", MODE_PRIVATE);
                 String savedConfigJson = prefs.getString("ygg_config", null);
                 boolean initialLaunch = savedConfigJson == null || savedConfigJson.isEmpty();
@@ -663,8 +1011,6 @@ public class ApplicationLoader extends Application {
                 scanTotal = peers.size();
 
                 AtomicBoolean yggStarted = new AtomicBoolean(false);
-                AtomicReference<String> currentPeerUri = new AtomicReference<>(null);
-                AtomicReference<Long> lastSwitchTime = new AtomicReference<>(0L);
                 JSONObject yggConfigForCallback = yggConfig;
 
                 List<PublicPeerInfo> sortedPeers = BuildersKt.runBlocking(EmptyCoroutineContext.INSTANCE, (scope, continuation) ->
@@ -686,8 +1032,6 @@ public class ApplicationLoader extends Application {
                             if (!yggStarted.get()) {
                                 // First reachable peer — start immediately
                                 if (yggStarted.compareAndSet(false, true)) {
-                                    currentPeerUri.set(best.getUri());
-                                    lastSwitchTime.set(System.currentTimeMillis());
                                     Log.d(YGG_LOG_TAG, "Early start with peer: " + best.getUri() + " (RTT: " + best.getRtt() + "ms)");
                                     try {
                                         startYggstack(yggConfigForCallback, Collections.singletonList(best));
@@ -696,12 +1040,6 @@ public class ApplicationLoader extends Application {
                                         Log.e(YGG_LOG_TAG, "Early start failed: " + yggLastError);
                                         yggStarted.set(false);
                                     }
-                                }
-                            } else if (!best.getUri().equals(currentPeerUri.get())) {
-                                // Better peer found — swap if >=15s since last switch
-                                long elapsed = System.currentTimeMillis() - lastSwitchTime.get();
-                                if (elapsed >= 15000) {
-                                    swapPeer(best, currentPeerUri, lastSwitchTime);
                                 }
                             }
                             return Unit.INSTANCE;
@@ -730,10 +1068,8 @@ public class ApplicationLoader extends Application {
                 if (!yggStarted.get()) {
                     Log.d(YGG_LOG_TAG, "Starting with best peer: " + bestPeer.getUri() + " (RTT: " + bestPeer.getRtt() + "ms)");
                     startYggstack(yggConfig, Collections.singletonList(bestPeer));
-                } else if (!bestPeer.getUri().equals(currentPeerUri.get())) {
-                    swapPeer(bestPeer, currentPeerUri, lastSwitchTime);
                 } else {
-                    Log.d(YGG_LOG_TAG, "Current peer is already the best: " + bestPeer.getUri());
+                    Log.d(YGG_LOG_TAG, "Peer scan complete; keeping the active peer to avoid a live tunnel interruption");
                 }
             } catch (Throwable e) {
                 yggLastError = getThrowableMessage(e);
@@ -741,9 +1077,28 @@ public class ApplicationLoader extends Application {
             } finally {
                 isPeersReiniting = false;
                 isScanningPeers = false;
-                yggStartInProgress.set(false);
-                if (!isYggdrasilRunning()) {
-                    restoreConfiguredProxySettings();
+                boolean runningAfterAttempt = isYggdrasilRunning();
+                if (runningAfterAttempt) {
+                    nextYggStartAttemptTime = 0;
+                } else if (attemptNetworkGeneration == networkGeneration.get()) {
+                    nextYggStartAttemptTime = SystemClock.elapsedRealtime() + restartDelay;
+                } else {
+                    nextYggStartAttemptTime = 0;
+                }
+                String pendingRestartReason;
+                long pendingRestartGeneration;
+                synchronized (yggRestartRequestLock) {
+                    yggStartInProgress.set(false);
+                    activeYggForcedRestartGeneration = NO_YGG_RESTART_GENERATION;
+                    pendingRestartReason = pendingYggForcedRestartReason;
+                    pendingRestartGeneration = pendingYggForcedRestartGeneration;
+                    pendingYggForcedRestartReason = null;
+                    pendingYggForcedRestartGeneration = NO_YGG_RESTART_GENERATION;
+                }
+                if (pendingRestartReason != null) {
+                    Log.d(YGG_LOG_TAG, "Draining queued forced Yggstack restart for generation "
+                            + pendingRestartGeneration + ": " + pendingRestartReason);
+                    requestYggdrasilRestart(pendingRestartReason, true, pendingRestartGeneration);
                 }
             }
         }).start();
@@ -757,6 +1112,8 @@ public class ApplicationLoader extends Application {
         } catch (Throwable ignore) {
 
         }
+
+        eraseLegacyProxyConfiguration();
 
         super.onCreate();
 
@@ -803,6 +1160,15 @@ public class ApplicationLoader extends Application {
                 super.onActivityStarted(activity);
                 if (wasInBackground) {
                     ensureCurrentNetworkGet(true);
+                    TelegramRoutingController.onForeground();
+                }
+            }
+
+            @Override
+            public void onActivityStopped(Activity activity) {
+                super.onActivityStopped(activity);
+                if (isBackground()) {
+                    TelegramRoutingController.onBackground();
                 }
             }
         };
@@ -818,7 +1184,6 @@ public class ApplicationLoader extends Application {
         AndroidUtilities.runOnUIThread(ApplicationLoader::startPushService);
 
         LauncherIconController.tryFixLauncherIconIfNeeded();
-        ProxyRotationController.init();
     }
 
     public static void startPushService() {
@@ -897,11 +1262,19 @@ public class ApplicationLoader extends Application {
                             @Override
                             public void onAvailable(@NonNull Network network) {
                                 lastKnownNetworkType = -1;
+                                scheduleNetworkStateUpdate("default network available");
                             }
 
                             @Override
                             public void onCapabilitiesChanged(@NonNull Network network, @NonNull NetworkCapabilities networkCapabilities) {
                                 lastKnownNetworkType = -1;
+                                scheduleNetworkStateUpdate("default network capabilities");
+                            }
+
+                            @Override
+                            public void onLost(@NonNull Network network) {
+                                lastKnownNetworkType = -1;
+                                scheduleNetworkStateUpdate("default network lost");
                             }
                         };
                         connectivityManager.registerDefaultNetworkCallback(networkCallback);

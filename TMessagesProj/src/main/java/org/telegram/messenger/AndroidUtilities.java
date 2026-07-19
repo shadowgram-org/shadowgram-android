@@ -122,6 +122,7 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.DrawableRes;
 import androidx.annotation.NonNull;
@@ -4580,10 +4581,43 @@ public class AndroidUtilities {
     }
 
     public static boolean isProxyLink(Uri data) {
+        if (!BuildVars.MANUAL_PROXY_ENABLED && isManualProxyLink(data)) {
+            return true;
+        }
         final Activity activity = AndroidUtilities.getActivity();
         if (activity == null) return false;
         final Intent intent = new Intent(Intent.ACTION_VIEW, data);
         return handleProxyIntent(activity, intent, false);
+    }
+
+    private static boolean isManualProxyLink(Uri data) {
+        if (data == null) {
+            return false;
+        }
+        String scheme = data.getScheme();
+        if (scheme == null) {
+            return false;
+        }
+        if ("tg".equalsIgnoreCase(scheme)) {
+            String url = data.toString().toLowerCase(Locale.US);
+            return url.startsWith("tg:proxy") || url.startsWith("tg://proxy")
+                    || url.startsWith("tg:socks") || url.startsWith("tg://socks");
+        }
+        if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+            String host = data.getHost();
+            String path = data.getPath();
+            return host != null && path != null
+                    && ("telegram.me".equalsIgnoreCase(host) || "t.me".equalsIgnoreCase(host) || "telegram.dog".equalsIgnoreCase(host))
+                    && (path.startsWith("/proxy") || path.startsWith("/socks"));
+        }
+        return false;
+    }
+
+    public static void showManualProxyDisabledNotice(Context context) {
+        Context toastContext = context != null ? context : ApplicationLoader.applicationContext;
+        if (toastContext != null) {
+            Toast.makeText(toastContext, getString(R.string.ManualProxyUnavailable), Toast.LENGTH_SHORT).show();
+        }
     }
 
     public static boolean handleProxyIntent(Activity activity, Intent intent, boolean invoked) {
@@ -4596,6 +4630,12 @@ public class AndroidUtilities {
             }
             Uri data = intent.getData();
             if (data != null) {
+                if (!BuildVars.MANUAL_PROXY_ENABLED && isManualProxyLink(data)) {
+                    if (invoked) {
+                        showManualProxyDisabledNotice(activity);
+                    }
+                    return true;
+                }
                 String user = null;
                 String password = null;
                 String port = null;
@@ -4684,6 +4724,10 @@ public class AndroidUtilities {
     }
 
     public static void showProxyAlert(Activity activity, final String address, final String port, final String user, final String password, final String secret) {
+        if (!BuildVars.MANUAL_PROXY_ENABLED) {
+            showManualProxyDisabledNotice(activity);
+            return;
+        }
         final BottomSheet.Builder builder = new BottomSheet.Builder(activity);
         builder.setApplyTopPadding(false);
         builder.setApplyBottomPadding(false);

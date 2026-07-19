@@ -767,7 +767,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
 
         proxyButtonView = new ImageView(context);
         proxyButtonView.setImageDrawable(proxyDrawable = new ProxyDrawable(context));
-        proxyButtonView.setOnClickListener(v -> presentFragment(new ProxyListActivity()));
+        if (BuildVars.MANUAL_PROXY_ENABLED) {
+            proxyButtonView.setOnClickListener(v -> presentFragment(new ProxyListActivity()));
+        }
         proxyButtonView.setAlpha(0f);
         proxyButtonView.setVisibility(View.GONE);
         sizeNotifierFrameLayout.addView(proxyButtonView, LayoutHelper.createFrame(32, 32, Gravity.RIGHT | Gravity.TOP, 16, 16, 16, 16));
@@ -8765,7 +8767,7 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
     private int currentConnectionState;
 
     private void updateProxyButton(boolean animated, boolean force) {
-        if (proxyDrawable == null) {
+        if (!BuildVars.MANUAL_PROXY_ENABLED || proxyDrawable == null) {
             return;
         }
         int state = getConnectionsManager().getConnectionState();

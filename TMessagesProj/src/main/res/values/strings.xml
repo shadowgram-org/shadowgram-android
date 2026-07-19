@@ -2663,6 +2663,7 @@
     <string name="EditPack">edit</string>
     <string name="PasteFromClipboard">Paste from clipboard</string>
     <string name="ProxySettings">Proxy Settings</string>
+    <string name="ManualProxyUnavailable">Custom proxies are unavailable because routing is managed automatically.</string>
     <string name="ProxyDetails">Proxy Details</string>
     <string name="Proxy">Proxy</string>
     <string name="ProxyConnections">Connections</string>
@@ -10557,6 +10558,16 @@
     <string name="YggdrasilNoConnectedPeers">No peers connected</string>
     <string name="YggdrasilNoConfigPeers">No config peers</string>
     <string name="YggdrasilNoPingedPeers">No pinged peers yet</string>
+    <string name="YggdrasilTelegramRoute">Telegram route</string>
+    <string name="YggdrasilRouteDirect">Direct</string>
+    <string name="YggdrasilRouteYggdrasil">Yggdrasil</string>
+    <string name="YggdrasilRouteChecking">checking</string>
+    <string name="YggdrasilDirectProbe">Direct reachability</string>
+    <string name="YggdrasilMeshProbe">Yggdrasil reachability</string>
+    <string name="YggdrasilProbeNever">Not checked yet</string>
+    <string name="YggdrasilProbeReachable">Reachable</string>
+    <string name="YggdrasilProbeUnreachable">Unreachable</string>
+    <string name="YggdrasilProbeAge">checked %1$d s ago</string>
     <string name="SettingsPowerSavingInfo">Reduce power usage on low charge</string>
     <string name="SettingsLanguage">Language</string>
     <string name="AddAccountInfo1_one">You can add %d additional account.</string>

@@ -485,16 +485,24 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
     memset(&socketAddress, 0, sizeof(sockaddr_in));
     memset(&socketAddress6, 0, sizeof(sockaddr_in6));
 
-    std::string *proxyAddress = &overrideProxyAddress;
-    std::string *proxySecret = &overrideProxySecret;
-    uint16_t proxyPort = overrideProxyPort;
-    if (proxyAddress->empty()) {
+    std::string *proxyAddress;
+    std::string *proxySecret;
+    uint16_t proxyPort;
+    if (proxyRouteMode == ProxyRouteMode::OverrideProxy) {
+        proxyAddress = &overrideProxyAddress;
+        proxyPort = overrideProxyPort;
+        proxySecret = &overrideProxySecret;
+    } else if (proxyRouteMode == ProxyRouteMode::Direct) {
+        proxyAddress = nullptr;
+        proxyPort = 0;
+        proxySecret = nullptr;
+    } else {
         proxyAddress = &ConnectionsManager::getInstance(instanceNum).proxyAddress;
         proxyPort = ConnectionsManager::getInstance(instanceNum).proxyPort;
         proxySecret = &ConnectionsManager::getInstance(instanceNum).proxySecret;
     }
 
-    if (!proxyAddress->empty()) {
+    if (proxyAddress != nullptr && !proxyAddress->empty()) {
         if (LOGS_ENABLED) DEBUG_D("connection(%p) connecting via proxy %s:%d secret[%d]", this, proxyAddress->c_str(), proxyPort, (int) proxySecret->size());
         if ((socketFd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
             if (LOGS_ENABLED) DEBUG_E("connection(%p) can't create proxy socket", this);
@@ -958,7 +966,7 @@ void ConnectionSocket::onEvent(uint32_t events) {
                         tempBuffer->bytes[0] = 0x01;
                         std::string *proxyUser;
                         std::string *proxyPassword;
-                        if (!overrideProxyAddress.empty()) {
+                        if (proxyRouteMode == ProxyRouteMode::OverrideProxy) {
                             proxyUser = &overrideProxyUser;
                             proxyPassword = &overrideProxyPassword;
                         } else {
@@ -1141,12 +1149,21 @@ void ConnectionSocket::dropConnection() {
     closeSocket(0, 0);
 }
 
-void ConnectionSocket::setOverrideProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret) {
+void ConnectionSocket::setProxyRoute(ProxyRouteMode mode, std::string address, uint16_t port, std::string username, std::string password, std::string secret) {
+    proxyRouteMode = mode;
     overrideProxyAddress = address;
     overrideProxyPort = port;
     overrideProxyUser = username;
     overrideProxyPassword = password;
     overrideProxySecret = secret;
+}
+
+void ConnectionSocket::setConnectionCheckId(int64_t checkId) {
+    connectionCheckId = checkId;
+}
+
+int64_t ConnectionSocket::getConnectionCheckId() const {
+    return connectionCheckId;
 }
 
 void ConnectionSocket::onHostNameResolved(std::string host, std::string ip, bool ipv6) {

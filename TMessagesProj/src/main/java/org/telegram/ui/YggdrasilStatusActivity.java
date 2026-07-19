@@ -17,6 +17,7 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.R;
+import org.telegram.messenger.TelegramRoutingController;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
@@ -48,6 +49,9 @@ public class YggdrasilStatusActivity extends BaseFragment {
     private int rowCount;
     private int statusHeaderRow;
     private int statusRow;
+    private int routeRow;
+    private int directProbeRow;
+    private int yggdrasilProbeRow;
     private int addressRow;
     private int publicKeyRow;
     private int statusShadowRow;
@@ -71,6 +75,9 @@ public class YggdrasilStatusActivity extends BaseFragment {
 
     private String statusString = "Unknown";
     private boolean statusRunning;
+    private String routeString = "Unknown";
+    private String directProbeString = "Never";
+    private String yggdrasilProbeString = "Never";
     private String addressString = "N/A";
     private String publicKeyString = "N/A";
     private final ArrayList<String> peersList = new ArrayList<>();
@@ -153,6 +160,26 @@ public class YggdrasilStatusActivity extends BaseFragment {
     }
 
     private void loadData() {
+        TelegramRoutingController.Status routingStatus = TelegramRoutingController.getStatus();
+        if (!routingStatus.networkOnline) {
+            routeString = LocaleController.getString(R.string.WaitingForNetwork);
+        } else {
+            routeString = routingStatus.route == TelegramRoutingController.Route.YGGDRASIL
+                    ? LocaleController.getString(R.string.YggdrasilRouteYggdrasil)
+                    : LocaleController.getString(R.string.YggdrasilRouteDirect);
+            if (routingStatus.probeInFlight) {
+                routeString += " · " + LocaleController.getString(R.string.YggdrasilRouteChecking);
+            }
+        }
+        directProbeString = formatProbeStatus(
+                routingStatus.lastDirectProbeResult,
+                routingStatus.lastDirectProbeLatencyMs,
+                routingStatus.lastDirectProbeAgeMs);
+        yggdrasilProbeString = formatProbeStatus(
+                routingStatus.lastYggdrasilProbeResult,
+                routingStatus.lastYggdrasilProbeLatencyMs,
+                routingStatus.lastYggdrasilProbeAgeMs);
+
         Yggstack ygg = ApplicationLoader.yggInstance;
         if (ygg != null) {
             try {
@@ -268,6 +295,9 @@ public class YggdrasilStatusActivity extends BaseFragment {
 
         statusHeaderRow = rowCount++;
         statusRow = rowCount++;
+        routeRow = rowCount++;
+        directProbeRow = rowCount++;
+        yggdrasilProbeRow = rowCount++;
         addressRow = rowCount++;
         publicKeyRow = rowCount++;
         statusShadowRow = rowCount++;
@@ -396,6 +426,19 @@ public class YggdrasilStatusActivity extends BaseFragment {
         return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
+    private static String formatProbeStatus(TelegramRoutingController.ProbeResult result, long latencyMs, long ageMs) {
+        if (result == TelegramRoutingController.ProbeResult.NEVER || ageMs < 0) {
+            return LocaleController.getString(R.string.YggdrasilProbeNever);
+        }
+        String value = result == TelegramRoutingController.ProbeResult.SUCCESS
+                ? LocaleController.getString(R.string.YggdrasilProbeReachable) + " · " + latencyMs + "ms"
+                : LocaleController.getString(R.string.YggdrasilProbeUnreachable);
+        long ageSeconds = ageMs / 1000L;
+        return value + " · " + LocaleController.formatString(
+                R.string.YggdrasilProbeAge,
+                (int) Math.min(Integer.MAX_VALUE, ageSeconds));
+    }
+
     private class ListAdapter extends RecyclerListView.SelectionAdapter {
 
         private final Context mContext;
@@ -479,6 +522,18 @@ public class YggdrasilStatusActivity extends BaseFragment {
                     cell.getValueTextView().setTextColor(Theme.getColor(
                             statusRunning ? Theme.key_windowBackgroundWhiteGreenText : Theme.key_text_RedRegular
                     ));
+                } else if (position == routeRow) {
+                    cell.setMultilineDetail(false);
+                    cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilTelegramRoute), routeString, true);
+                    cell.getValueTextView().setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
+                } else if (position == directProbeRow) {
+                    cell.setMultilineDetail(false);
+                    cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilDirectProbe), directProbeString, true);
+                    cell.getValueTextView().setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
+                } else if (position == yggdrasilProbeRow) {
+                    cell.setMultilineDetail(false);
+                    cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilMeshProbe), yggdrasilProbeString, true);
+                    cell.getValueTextView().setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
                 } else if (position == addressRow) {
                     cell.setMultilineDetail(false);
                     cell.setTextAndValue(LocaleController.getString(R.string.YggdrasilIPv6Address), addressString, true);

@@ -10880,6 +10880,22 @@ public class MessagesController extends BaseController implements NotificationCe
             } else if (response instanceof TLRPC.TL_help_promoData) {
                 TLRPC.TL_help_promoData res = (TLRPC.TL_help_promoData) response;
 
+                if (res.proxy && !BuildVars.MANUAL_PROXY_ENABLED) {
+                    nextPromoInfoCheckTime = res.expires;
+                    promoDialogId = 0;
+                    proxyDialogAddress = null;
+                    getGlobalMainSettings().edit()
+                            .remove("proxy_dialog")
+                            .remove("proxyDialogAddress")
+                            .remove("promo_dialog_type")
+                            .putInt("nextPromoInfoCheckTime", nextPromoInfoCheckTime)
+                            .commit();
+                    checkingPromoInfoRequestId = 0;
+                    checkingPromoInfo = false;
+                    AndroidUtilities.runOnUIThread(this::removePromoDialog);
+                    return;
+                }
+
                 long did;
                 if (res.peer == null) {
                     did = 0;

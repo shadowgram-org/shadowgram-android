@@ -2880,7 +2880,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
         if (initialDialogsType == DIALOGS_TYPE_DEFAULT) {
             askAboutContacts = MessagesController.getGlobalNotificationsSettings().getBoolean("askAboutContacts", true);
-            SharedConfig.loadProxyList();
+            if (BuildVars.MANUAL_PROXY_ENABLED) {
+                SharedConfig.loadProxyList();
+            }
         }
 
         observersGroup = getNotificationCenter().createObserversGroup(this);
@@ -3261,11 +3263,13 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             });
             doneItem.setAlpha(0.0f);
             doneItem.setVisibility(View.GONE);
-            proxyDrawable = new ProxyDrawable(context);
-            proxyMenuSubItem = new ActionBarMenuSubItem(context, false, true, resourceProvider);
-            proxyMenuSubItem.setItemHeight(56);
-            proxyMenuSubItem.setTextAndIcon(getString(R.string.MenuProxyTitle), 0, proxyDrawable);
-            proxyMenuSubItem.setContentDescription(getString(R.string.ProxySettings));
+            if (BuildVars.MANUAL_PROXY_ENABLED) {
+                proxyDrawable = new ProxyDrawable(context);
+                proxyMenuSubItem = new ActionBarMenuSubItem(context, false, true, resourceProvider);
+                proxyMenuSubItem.setItemHeight(56);
+                proxyMenuSubItem.setTextAndIcon(getString(R.string.MenuProxyTitle), 0, proxyDrawable);
+                proxyMenuSubItem.setContentDescription(getString(R.string.ProxySettings));
+            }
 
             passcodeItem = menu.addItem(1, R.drawable.outline_header_lock_24);
             passcodeItem.setContentDescription(getString(R.string.AccDescrPasscodeLock));

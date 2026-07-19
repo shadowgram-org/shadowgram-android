@@ -45,6 +45,13 @@ public class BuildVars {
 
     public static boolean USE_LEGACY_SYSTEM_INSETS = false;
 
+    /**
+     * Manual Telegram proxy configuration is disabled in this fork. Internal
+     * routing may still use tgnet's proxy transport without exposing it as a
+     * user-configurable proxy.
+     */
+    public static final boolean MANUAL_PROXY_ENABLED = false;
+
     static {
         if (ApplicationLoader.applicationContext != null) {
             SharedPreferences sharedPreferences = ApplicationLoader.applicationContext.getSharedPreferences("systemConfig", Context.MODE_PRIVATE);

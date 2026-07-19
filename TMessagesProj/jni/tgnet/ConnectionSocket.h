@@ -11,6 +11,7 @@
 
 #include <sys/epoll.h>
 #include <netinet/in.h>
+#include <cstdint>
 #include <string>
 
 class NativeByteBuffer;
@@ -18,6 +19,12 @@ class ConnectionsManager;
 class ByteStream;
 class EventObject;
 class ByteArray;
+
+enum class ProxyRouteMode : uint8_t {
+    Inherit,
+    OverrideProxy,
+    Direct
+};
 
 class ConnectionSocket {
 
@@ -32,7 +39,9 @@ public:
     time_t getTimeout();
     bool isDisconnected();
     void dropConnection();
-    void setOverrideProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret);
+    void setProxyRoute(ProxyRouteMode mode, std::string address, uint16_t port, std::string username, std::string password, std::string secret);
+    void setConnectionCheckId(int64_t checkId);
+    int64_t getConnectionCheckId() const;
     void onHostNameResolved(std::string host, std::string ip, bool ipv6);
 
 protected:
@@ -51,6 +60,7 @@ protected:
     std::string overrideProxyAddress = "";
     std::string overrideProxySecret = "";
     uint16_t overrideProxyPort = 1080;
+    ProxyRouteMode proxyRouteMode = ProxyRouteMode::Inherit;
 
 private:
     ByteStream *outgoingByteStream = nullptr;
@@ -81,6 +91,7 @@ private:
     int8_t tlsState = 0;
 
     uint8_t proxyAuthState;
+    int64_t connectionCheckId = 0;
 
     int32_t checkSocketError(int32_t *error);
     void closeSocket(int32_t reason, int32_t error);

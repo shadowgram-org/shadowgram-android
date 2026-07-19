@@ -264,4 +264,15 @@
     <string name="RemindDayAt">\'Отправить\' d MMM \'в\' HH:mm</string>
     <string name="RemindDayYearAt">\'Напомнить\' d MMM yyyy \'в\' HH:mm</string>
     <string name="SettingsYggdrasilInfo">Управление и статус Yggdrasil</string>
+    <string name="ManualProxyUnavailable">Пользовательские прокси недоступны: подключение настраивается автоматически.</string>
+    <string name="YggdrasilTelegramRoute">Маршрут Telegram</string>
+    <string name="YggdrasilRouteDirect">Напрямую</string>
+    <string name="YggdrasilRouteYggdrasil">Yggdrasil</string>
+    <string name="YggdrasilRouteChecking">проверка</string>
+    <string name="YggdrasilDirectProbe">Прямое подключение</string>
+    <string name="YggdrasilMeshProbe">Подключение Yggdrasil</string>
+    <string name="YggdrasilProbeNever">Ещё не проверялось</string>
+    <string name="YggdrasilProbeReachable">Доступно</string>
+    <string name="YggdrasilProbeUnreachable">Недоступно</string>
+    <string name="YggdrasilProbeAge">проверено %1$d с назад</string>
 </resources>

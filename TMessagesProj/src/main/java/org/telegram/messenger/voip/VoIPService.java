@@ -3451,7 +3451,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 
 			// proxy
 			Instance.Proxy proxy = null;
-			if (preferences.getBoolean("proxy_enabled", false) && preferences.getBoolean("proxy_enabled_calls", false)) {
+			if (BuildVars.MANUAL_PROXY_ENABLED && preferences.getBoolean("proxy_enabled", false) && preferences.getBoolean("proxy_enabled_calls", false)) {
 				final String server = preferences.getString("proxy_ip", null);
 				final String secret = preferences.getString("proxy_secret", null);
 				if (!TextUtils.isEmpty(server) && TextUtils.isEmpty(secret)) {

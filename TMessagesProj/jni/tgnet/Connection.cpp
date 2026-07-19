@@ -447,13 +447,13 @@ void Connection::sendData(NativeByteBuffer *buff, bool reportAck, bool encrypted
 
     uint8_t useSecret = 0;
     if (!firstPacketSent) {
-        if (!overrideProxyAddress.empty()) {
+        if (proxyRouteMode == ProxyRouteMode::OverrideProxy) {
             if (!overrideProxySecret.empty()) {
                 useSecret = 1;
             } else if (!secret.empty()) {
                 useSecret = 2;
             }
-        } else if (!ConnectionsManager::getInstance(currentDatacenter->instanceNum).proxyAddress.empty() && !ConnectionsManager::getInstance(currentDatacenter->instanceNum).proxySecret.empty()) {
+        } else if (proxyRouteMode == ProxyRouteMode::Inherit && !ConnectionsManager::getInstance(currentDatacenter->instanceNum).proxyAddress.empty() && !ConnectionsManager::getInstance(currentDatacenter->instanceNum).proxySecret.empty()) {
             useSecret = 1;
         } else if (!secret.empty()) {
             useSecret = 2;
@@ -624,7 +624,7 @@ void Connection::sendData(NativeByteBuffer *buff, bool reportAck, bool encrypted
 inline std::string *Connection::getCurrentSecret(uint8_t secretType) {
     if (secretType == 2) {
         return &secret;
-    } else if (!overrideProxySecret.empty()) {
+    } else if (proxyRouteMode == ProxyRouteMode::OverrideProxy) {
         return &overrideProxySecret;
     } else {
         return &ConnectionsManager::getInstance(currentDatacenter->instanceNum).proxySecret;

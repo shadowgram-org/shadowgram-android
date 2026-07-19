@@ -40,6 +40,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.DownloadController;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
@@ -331,6 +332,10 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
 
     @Override
     public boolean onFragmentCreate() {
+        if (!BuildVars.MANUAL_PROXY_ENABLED) {
+            AndroidUtilities.showManualProxyDisabledNotice(getParentActivity());
+            return false;
+        }
         super.onFragmentCreate();
 
         SharedConfig.loadProxyList();

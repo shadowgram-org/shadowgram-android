@@ -130,6 +130,7 @@ import org.telegram.messenger.R;
 import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SharedPrefsHelper;
+import org.telegram.messenger.TelegramRoutingController;
 import org.telegram.messenger.TopicsController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
@@ -313,7 +314,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     private TermsOfServiceView termsOfServiceView;
     private BlockingUpdateView blockingUpdateView;
     public final ArrayList<Dialog> visibleDialogs = new ArrayList<>();
-    private Dialog proxyErrorDialog;
     private SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow selectAnimatedEmojiDialog;
     private View rippleAbove;
     public Dialog getVisibleDialog() {
@@ -6100,15 +6100,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                             FileLog.e(e);
                         }
                         localeDialog = null;
-                    } else if (dialog == proxyErrorDialog) {
-                        SharedPreferences preferences = MessagesController.getGlobalMainSettings();
-                        SharedPreferences.Editor editor = MessagesController.getGlobalMainSettings().edit();
-                        editor.putBoolean("proxy_enabled", false);
-                        editor.putBoolean("proxy_enabled_calls", false);
-                        editor.commit();
-                        ConnectionsManager.setProxySettings(false, "", 1080, "", "", "");
-                        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
-                        proxyErrorDialog = null;
                     }
                 }
                 visibleDialogs.remove(dialog);
@@ -7203,7 +7194,10 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
         } else if (id == NotificationCenter.needShowAlert) {
             final Integer reason = (Integer) args[0];
-            if (reason == 6 || reason == 3 && proxyErrorDialog != null) {
+            if (reason == 6) {
+                return;
+            } else if (reason == 3) {
+                TelegramRoutingController.onInternalProxyError(account);
                 return;
             } else if (reason == 4) {
                 showTosActivity(account, (TLRPC.TL_help_termsOfService) args[1]);
@@ -7223,7 +7217,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 builder.setTopAnimation(R.raw.not_available, AlertsCreator.NEW_DENY_DIALOG_TOP_ICON_SIZE, false, fragment.getThemedColor(Theme.key_dialogTopBackground), colorsReplacement);
                 builder.setTopAnimationIsNew(true);
             }
-            if (reason != 2 && reason != 3) {
+            if (reason != 2) {
                 builder.setNegativeButton(LocaleController.getString(R.string.MoreInfo), (dialogInterface, i) -> {
                     if (!mainFragmentsStack.isEmpty()) {
                         MessagesController.getInstance(account).openByUserName("spambot", mainFragmentsStack.get(mainFragmentsStack.size() - 1), 1);
@@ -7271,12 +7265,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 } else {
                     builder.setPositiveButton(LocaleController.getString(R.string.OK), null);
                 }
-            } else if (reason == 3) {
-                builder.setTitle(LocaleController.getString(R.string.Proxy));
-                builder.setMessage(LocaleController.getString(R.string.UseProxyTelegramError));
-                builder.setPositiveButton(LocaleController.getString(R.string.OK), null);
-                proxyErrorDialog = showAlertDialog(builder);
-                return;
             }
             builder.show();
         } else if (id == NotificationCenter.wasUnableToFindCurrentLocation) {
@@ -8220,7 +8208,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         }
         String title = null;
         int titleId = 0;
-        Runnable action = null;
         currentConnectionState = ConnectionsManager.getInstance(currentAccount).getConnectionState();
         if (currentConnectionState == ConnectionsManager.ConnectionStateWaitingForNetwork) {
             title = "WaitingForNetwork";
@@ -8228,32 +8215,12 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         } else if (currentConnectionState == ConnectionsManager.ConnectionStateUpdating) {
             title = "Updating";
             titleId = R.string.Updating;
-        } else if (currentConnectionState == ConnectionsManager.ConnectionStateConnectingToProxy) {
-            title = "ConnectingToProxyWithDots";
-            titleId = R.string.ConnectingToProxyWithDots;
-        } else if (currentConnectionState == ConnectionsManager.ConnectionStateConnecting) {
+        } else if (currentConnectionState == ConnectionsManager.ConnectionStateConnecting
+                || currentConnectionState == ConnectionsManager.ConnectionStateConnectingToProxy) {
             title = "Connecting";
             titleId = R.string.Connecting;
         }
-        if (currentConnectionState == ConnectionsManager.ConnectionStateConnecting || currentConnectionState == ConnectionsManager.ConnectionStateConnectingToProxy) {
-            action = () -> {
-                BaseFragment lastFragment = null;
-                if (AndroidUtilities.isTablet()) {
-                    if (!layerFragmentsStack.isEmpty()) {
-                        lastFragment = layerFragmentsStack.get(layerFragmentsStack.size() - 1);
-                    }
-                } else {
-                    if (!mainFragmentsStack.isEmpty()) {
-                        lastFragment = mainFragmentsStack.get(mainFragmentsStack.size() - 1);
-                    }
-                }
-                if (lastFragment instanceof ProxyListActivity || lastFragment instanceof ProxySettingsActivity) {
-                    return;
-                }
-                presentFragment(new ProxyListActivity());
-            };
-        }
-        actionBarLayout.setTitleOverlayText(title, titleId, action);
+        actionBarLayout.setTitleOverlayText(title, titleId, null);
     }
 
     public void hideVisibleActionMode() {

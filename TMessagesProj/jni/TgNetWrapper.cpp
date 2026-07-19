@@ -331,6 +331,23 @@ jlong checkProxy(JNIEnv *env, jclass c, jint instanceNum, jstring address, jint 
     return result;
 }
 
+jlong checkDirect(JNIEnv *env, jclass c, jint instanceNum, jobject requestTimeFunc) {
+    if (requestTimeFunc != nullptr) {
+        DEBUG_REF("checkDirect requestTimeFunc");
+        requestTimeFunc = env->NewGlobalRef(requestTimeFunc);
+    }
+
+    return ConnectionsManager::getInstance(instanceNum).checkDirect([instanceNum, requestTimeFunc](int64_t time) {
+        if (requestTimeFunc != nullptr) {
+            jniEnv[instanceNum]->CallVoidMethod(requestTimeFunc, jclass_RequestTimeDelegate_run, time);
+        }
+    }, requestTimeFunc);
+}
+
+void cancelConnectionCheck(JNIEnv *env, jclass c, jint instanceNum, jlong checkId) {
+    ConnectionsManager::getInstance(instanceNum).cancelConnectionCheck(checkId);
+}
+
 class Delegate : public ConnectiosManagerDelegate {
     
     void onUpdate(int32_t instanceNum) {
@@ -380,7 +397,7 @@ class Delegate : public ConnectiosManagerDelegate {
     }
 
     void onProxyError(int32_t instanceNum) {
-        jniEnv[instanceNum]->CallStaticVoidMethod(jclass_ConnectionsManager, jclass_ConnectionsManager_onProxyError);
+        jniEnv[instanceNum]->CallStaticVoidMethod(jclass_ConnectionsManager, jclass_ConnectionsManager_onProxyError, instanceNum);
     }
 
     void getHostByName(std::string domain, int32_t instanceNum, ConnectionSocket *socket) {
@@ -554,6 +571,8 @@ static JNINativeMethod ConnectionsManagerMethods[] = {
         {"native_setJava", "(Z)V", (void *) setJava},
         {"native_applyDnsConfig", "(IJLjava/lang/String;I)V", (void *) applyDnsConfig},
         {"native_checkProxy", "(ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Lorg/telegram/tgnet/RequestTimeDelegate;)J", (void *) checkProxy},
+        {"native_checkDirect", "(ILorg/telegram/tgnet/RequestTimeDelegate;)J", (void *) checkDirect},
+        {"native_cancelConnectionCheck", "(IJ)V", (void *) cancelConnectionCheck},
         {"native_onHostNameResolved", "(Ljava/lang/String;JLjava/lang/String;)V", (void *) onHostNameResolved},
         {"native_discardConnection", "(III)V", (void *) discardConnection},
         {"native_failNotRunningRequest", "(II)V", (void *) failNotRunningRequest},
@@ -668,7 +687,7 @@ extern "C" int registerNativeTgNetFunctions(JavaVM *vm, JNIEnv *env) {
     if (jclass_ConnectionsManager_onRequestNewServerIpAndPort == 0) {
         return JNI_FALSE;
     }
-    jclass_ConnectionsManager_onProxyError = env->GetStaticMethodID(jclass_ConnectionsManager, "onProxyError", "()V");
+    jclass_ConnectionsManager_onProxyError = env->GetStaticMethodID(jclass_ConnectionsManager, "onProxyError", "(I)V");
     if (jclass_ConnectionsManager_onProxyError == 0) {
         return JNI_FALSE;
     }

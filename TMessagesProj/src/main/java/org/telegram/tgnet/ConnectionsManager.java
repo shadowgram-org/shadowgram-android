@@ -42,6 +42,7 @@ import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.PushListenerController;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.StatsController;
+import org.telegram.messenger.TelegramRoutingController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
 import org.telegram.ui.Components.VideoPlayer;
@@ -628,18 +629,8 @@ public class ConnectionsManager extends BaseController {
     }
 
     public void init(int version, int layer, int apiId, String deviceModel, String systemVersion, String appVersion, String langCode, String systemLangCode, String configPath, String logPath, String regId, String cFingerprint, int timezoneOffset, long userId, boolean userPremium, boolean enablePushConnection) {
-        SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
-        String proxyAddress = preferences.getString("proxy_ip", "");
-        String proxyUsername = preferences.getString("proxy_user", "");
-        String proxyPassword = preferences.getString("proxy_pass", "");
-        String proxySecret = preferences.getString("proxy_secret", "");
-        int proxyPort = preferences.getInt("proxy_port", 1080);
-
-        if (preferences.getBoolean("proxy_enabled", false) && !TextUtils.isEmpty(proxyAddress)) {
-            native_setProxySettings(currentAccount, proxyAddress, proxyPort, proxyUsername, proxyPassword, proxySecret);
-        }
-        // Yggdrasil proxy (127.0.0.1:9001) is set later by ApplicationLoader.startYggstack()
-        // once the tunnel is actually ready, to avoid connecting to a dead port
+        // Runtime routing is owned by TelegramRoutingController. Persisted user proxies are
+        // intentionally ignored so restored preferences cannot preempt direct-first startup.
         String installer = "";
         try {
             Context context = ApplicationLoader.applicationContext;
@@ -748,6 +739,16 @@ public class ConnectionsManager extends BaseController {
             secret = "";
         }
         return native_checkProxy(currentAccount, address, port, username, password, secret, requestTimeDelegate);
+    }
+
+    public long checkDirect(RequestTimeDelegate requestTimeDelegate) {
+        return native_checkDirect(currentAccount, requestTimeDelegate);
+    }
+
+    public void cancelConnectionCheck(long checkId) {
+        if (checkId != 0) {
+            native_cancelConnectionCheck(currentAccount, checkId);
+        }
     }
 
     public void setAppPaused(final boolean value, final boolean byScreenState) {
@@ -898,8 +899,8 @@ public class ConnectionsManager extends BaseController {
         });
     }
 
-    public static void onProxyError() {
-        AndroidUtilities.runOnUIThread(() -> NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.needShowAlert, 3));
+    public static void onProxyError(int currentAccount) {
+        TelegramRoutingController.onInternalProxyError(currentAccount);
     }
 
     public static void getHostByName(String hostName, long address) {
@@ -951,6 +952,9 @@ public class ConnectionsManager extends BaseController {
     }
 
     public static void setProxySettings(boolean enabled, String address, int port, String username, String password, String secret) {
+        if (!BuildVars.MANUAL_PROXY_ENABLED) {
+            return;
+        }
         if (address == null) {
             address = "";
         }
@@ -973,6 +977,33 @@ public class ConnectionsManager extends BaseController {
             AccountInstance accountInstance = AccountInstance.getInstance(a);
             if (accountInstance.getUserConfig().isClientActivated()) {
                 accountInstance.getMessagesController().checkPromoInfo(true);
+            }
+        }
+    }
+
+    /**
+     * Applies an internal runtime route to every account without persisting it or
+     * invoking Telegram's user-proxy promo and rotation behavior.
+     */
+    public static void setInternalProxySettings(boolean enabled, String address, int port, String username, String password, String secret) {
+        if (address == null) {
+            address = "";
+        }
+        if (username == null) {
+            username = "";
+        }
+        if (password == null) {
+            password = "";
+        }
+        if (secret == null) {
+            secret = "";
+        }
+
+        for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
+            if (enabled && !TextUtils.isEmpty(address)) {
+                native_setProxySettings(a, address, port, username, password, secret);
+            } else {
+                native_setProxySettings(a, "", 1080, "", "", "");
             }
         }
     }
@@ -1008,6 +1039,8 @@ public class ConnectionsManager extends BaseController {
     public static native void native_setPushConnectionEnabled(int currentAccount, boolean value);
     public static native void native_applyDnsConfig(int currentAccount, long address, String phone, int date);
     public static native long native_checkProxy(int currentAccount, String address, int port, String username, String password, String secret, RequestTimeDelegate requestTimeDelegate);
+    public static native long native_checkDirect(int currentAccount, RequestTimeDelegate requestTimeDelegate);
+    public static native void native_cancelConnectionCheck(int currentAccount, long checkId);
     public static native void native_onHostNameResolved(String host, long address, String ip);
     public static native void native_discardConnection(int currentAccount, int datacenterId, int connectionType);
     public static native void native_failNotRunningRequest(int currentAccount, int token);

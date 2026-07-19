@@ -1270,12 +1270,11 @@ public class DialogStoriesCell extends FrameLayout implements NotificationCenter
     EllipsizeSpanAnimator ellipsizeSpanAnimator = new EllipsizeSpanAnimator(this);
 
     public void setTitleOverlayText(String titleOverlayText, int textId) {
-        final CharSequence subtitleToSet;
         if (textId == R.string.ConnectingToProxyWithDots) {
-            subtitleToSet = AndroidUtilities.replaceArrows(getString(R.string.TitleSetupProxy), true, dp(8f / 3f), dp(2));
-        } else {
-            subtitleToSet = null;
+            titleOverlayText = "Connecting";
+            textId = R.string.Connecting;
         }
+        final CharSequence subtitleToSet = null;
         subtitleOverlayContainer.setText(subtitleToSet, true);
 
         boolean hasEllipsizedText = false;
